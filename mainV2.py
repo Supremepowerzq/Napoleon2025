@@ -13,7 +13,7 @@ import tempfile
 from MotorGroup.RmdGroupV2 import MotorGroup
 from config import *
 from ToolKits.ToolBox import get_time
-from RobotUI import RobotUI
+# from RobotUI import RobotUI
 import ttkbootstrap as ttk
 from Interface.CameraInterface import RealSenseL515
 
