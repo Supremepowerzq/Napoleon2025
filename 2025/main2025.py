@@ -37,11 +37,13 @@ class MotorGroup2025:
 
     def angle_return(self) -> bool:
         finish = True
+        finish &= self.m0.angle_return()
         finish &= self.m1.angle_return()
         finish &= self.m2.angle_return()
         return finish
 
     def set_current_position_as_zero_point(self) -> None:
+        self.m0.set_current_position_as_zero_point()
         self.m1.set_current_position_as_zero_point()
         self.m2.set_current_position_as_zero_point()
 
@@ -49,6 +51,12 @@ class MotorGroup2025:
         self.m0.stop()
         self.m1.stop()
         self.m2.stop()
+
+    def shutdown_all(self) -> None:
+        # 关闭输出，进入空闲可自由转动
+        self.m0.shutdown()
+        self.m1.shutdown()
+        self.m2.shutdown()
 
 
 def main() -> None:
@@ -65,11 +73,17 @@ def main() -> None:
     motors = MotorGroup2025(ser)
 
     print(f"{get_time()}-初始化完成：\n"
-          f"  START 返回空闲并退出\n"
-          f"  X 触发电机1/2 角度归零\n"
+          f"  START 退出\n"
+          f"  B 切换 手动/空闲 模式（空闲=释放输出，可自由转动）\n"
+          f"  A 将当前位置写入为零点（三电机，将重启更新）\n"
+          f"  X 一键回零（三电机）\n"
           f"  右摇杆Y 控制电机0前后\n"
           f"  左摇杆X 控制电机1左右\n"
           f"  左摇杆Y 控制电机2上下")
+
+    # 模式：True=手动控制；False=空闲（关闭输出可自由转动）
+    manual_mode = True
+    was_manual_mode = True
 
     try:
         while True:
@@ -80,6 +94,18 @@ def main() -> None:
                 print(f"{get_time()}-接收到 START，准备退出...")
                 break
 
+            # 模式切换：B
+            if xbox.is_button_pressed('B'):
+                manual_mode = not manual_mode
+                mode_str = "手动控制" if manual_mode else "空闲模式"
+                print(f"{get_time()}-切换为 {mode_str}")
+
+            # A：将当前位置写为零点（会重启电机）
+            if xbox.is_button_pressed('A'):
+                print(f"{get_time()}-设定当前位置为零点（写入ROM并重启）...")
+                motors.set_current_position_as_zero_point()
+                print(f"{get_time()}-零点设定完成")
+
             if xbox.is_button_pressed('X'):
                 print(f"{get_time()}-触发角度归零...")
                 # 循环调用直到完成
@@ -87,17 +113,24 @@ def main() -> None:
                     busy_maintain_target_frequency(60, time.perf_counter())
                 print(f"{get_time()}-角度归零完成")
 
-            # 摇杆映射
-            speed_forward, speed_turn = xbox.map_joystick_values_to_motion_values()
+            # 进入/退出空闲模式时的瞬时处理
+            if was_manual_mode and not manual_mode:
+                # 切到空闲：关闭输出
+                motors.shutdown_all()
+            was_manual_mode = manual_mode
 
-            # 电机0：前后
-            motors.move_forward(speed_forward)
+            if manual_mode:
+                # 摇杆映射（仅在手动模式下生效）
+                speed_forward, speed_turn = xbox.map_joystick_values_to_motion_values()
 
-            # 电机1：左右（水平分量）
-            motors.map_horizontal(speed_turn[0])
+                # 电机0：前后
+                motors.move_forward(speed_forward)
 
-            # 电机2：上下（垂直分量）
-            motors.map_vertical(speed_turn[1])
+                # 电机1：左右（水平分量）
+                motors.map_horizontal(speed_turn[0])
+
+                # 电机2：上下（垂直分量）
+                motors.map_vertical(speed_turn[1])
 
             busy_maintain_target_frequency(60, t0)
 
