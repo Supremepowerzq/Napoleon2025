@@ -37,10 +37,8 @@ class XboxController:
             'TR': False, # 右摇杆按下
             'LS': [0.0, 0.0],  # 左摇杆 [x, y]
             'RS': [0.0, 0.0],  # 右摇杆 [x, y]
-            # 'LT': 0.0,  # 左扳机
-            # 'RT': 0.0,   # 右扳机
-            'LT': False,  # 左扳机
-            'RT': False,   # 右扳机
+            'LT': 0.0,  # 左扳机（0.0 到 1.0）
+            'RT': 0.0,  # 右扳机（0.0 到 1.0）
             'DPAD_X': 0.0,  # 方向键 x
             'DPAD_Y': 0.0  # 方向键 y
         }
@@ -211,6 +209,41 @@ class XboxController:
         """
         self.shutdown_event.set()
         self.thread.join()
+
+    def get_trigger_value(self, trigger: str) -> float:
+        """
+        获取扳机的值
+
+        参数：
+        - trigger: 扳机名称 ('LT' 或 'RT')
+
+        返回：
+        - float: 扳机值 (0.0 到 1.0)
+        """
+        return self.state[trigger]
+
+    def get_joystick_value(self, axis: str) -> float:
+        """
+        获取摇杆的值
+
+        参数：
+        - axis: 轴名称 ('LX', 'LY', 'RX', 'RY')
+                L = 左摇杆, R = 右摇杆
+                X = 水平轴, Y = 垂直轴
+
+        返回：
+        - float: 摇杆值 (-1.0 到 1.0)
+        """
+        if axis == 'LX':
+            return self.state['LS'][0]
+        elif axis == 'LY':
+            return self.state['LS'][1]  
+        elif axis == 'RX':
+            return self.state['RS'][0]
+        elif axis == 'RY':
+            return self.state['RS'][1]  
+        else:
+            raise ValueError("无效的轴名称")
 
     def __repr__(self) -> str:
         """

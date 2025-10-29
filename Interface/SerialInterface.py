@@ -1,3 +1,4 @@
+from typing import Union
 import serial
 from serial.tools import list_ports
 from config import *
@@ -59,7 +60,9 @@ def get_serial():
     return [rmd_serial, inspire_serial]
 
 
-def find_rmd_motor_port(id: int) -> str | None:
+from typing import Union
+
+def find_rmd_motor_port(id: int) -> Union[str, None]:
     """
     查找RMD电机的串口。
 

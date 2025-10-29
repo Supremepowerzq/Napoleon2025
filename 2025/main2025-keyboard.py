@@ -52,9 +52,9 @@ def main() -> None:
     motors = MotorGroup2025(ser)
 
     # 速度参数（可按需调整）
-    SPEED_HORIZONTAL = 10.0
-    SPEED_VERTICAL = 10.0
-    SPEED_FORWARD = 10.0
+    SPEED_HORIZONTAL = 50.0
+    SPEED_VERTICAL = 50.0
+    SPEED_FORWARD = 50.0
 
     print(
         f"{get_time()}-初始化完成：\n"
