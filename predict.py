@@ -23,7 +23,7 @@ from config import get_config
 class UnetPackage:
     def __init__(self, model_path=None, 
         mode='video', count=False, name_classes=None, 
-        video_path=0, video_save_path="", 
+        video_path=1, video_save_path="", 
         video_fps=30, test_interval=1000, 
         fps_image_path="img/street.jpg", 
         dir_origin_path="img/", 
