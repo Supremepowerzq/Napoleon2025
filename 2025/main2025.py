@@ -71,7 +71,7 @@ class MotorGroup2025:
         self.m2.set_speed(value)
 
     def angle_return(self) -> bool:
-        """电机归零，对电机2使用较慢的速度"""
+        """电机归零，使用位置闭环控制"""
         finish = True
 
         # 一次性更新两个电机状态
@@ -82,25 +82,18 @@ class MotorGroup2025:
         current_angle1 = self.m1.position
         current_angle2 = self.m2.position
 
-        # 同时控制两个电机
-        if abs(current_angle1) > 0.5 or abs(current_angle2) > 0.5:
-            # 电机1控制
-            if abs(current_angle1) > 0.5:
-                direction1 = -1 if current_angle1 > 0 else 1
-                self.m1.set_speed(direction1 * TURN_COEFF)
-            else:
-                self.m1.stop()
-            
-            # 电机2控制（使用较低的速度）
-            if abs(current_angle2) > 0.5:
-                direction2 = -1 if current_angle2 > 0 else 1
-                self.m2.set_speed(direction2 * TURN_COEFF / 2)  # 使用一半速度
-            else:
-                self.m2.stop()
-            
+        # 电机1：使用位置闭环，精确归零
+        if abs(current_angle1) > 0.1:  # 降低阈值提高精度
+            self.m1.set_position(0, max_speed=TURN_COEFF/2)  # 降低速度提高精度
             finish = False
-        else:
-            # 两个电机都到位，停止
+        
+        # 电机2：使用位置闭环，精确归零
+        if abs(current_angle2) > 0.1:
+            self.m2.set_position(0, max_speed=TURN_COEFF/3)  # 使用更低的速度
+            finish = False
+        
+        if finish:
+            # 完全停止
             self.m1.stop()
             self.m2.stop()
         
@@ -172,7 +165,7 @@ def main() -> None:
                 print(f"{get_time()}-零点设定完成")
 
             if xbox.is_button_pressed('X'):
-                print(f"{get_time()}-触发角度归零...")
+                print(f"\n{get_time()}-触发角度归零...")
                 # 循环调用直到完成
                 while not motors.angle_return():
                     busy_maintain_target_frequency(60, time.perf_counter())
@@ -198,7 +191,9 @@ def main() -> None:
                 # 显示当前控制值和角度
                 print(f"\r扳机(RT={right_trigger:.2f}, LT={left_trigger:.2f}) " + 
                       f"摇杆(RX={right_stick_x:.2f}, LY={left_stick_y:.2f}) " +
-                      f"角度(M0={angles[0]:.1f}°, M1={angles[1]:.1f}°, M2={angles[2]:.1f}°)", end="")
+                    #   f"角度(M0={angles[0]:.1f}°, M1={angles[1]:.1f}°, M2={angles[2]:.1f}°)", end=""
+                      f"角度(M1={angles[1]:.1f}°, M2={angles[2]:.1f}°)", end=""
+                      )
 
                 # 电机0：前后（使用扳机）
                 if abs(right_trigger) > 0.05 or abs(left_trigger) > 0.05:
@@ -211,17 +206,20 @@ def main() -> None:
                     motors.m0.stop()
 
                 # 电机1：左右（使用右摇杆X轴）
-                if abs(right_stick_x) > 0.05:
-                    # 只有当摇杆有明显输入时才控制
-                    motors.map_horizontal(right_stick_x * TURN_COEFF)
+                if abs(right_stick_x) > 0.02:  # 降低死区阈值，提高响应性
+                    # 应用平方函数使控制更平滑
+                    control_value = (right_stick_x * abs(right_stick_x)) * TURN_COEFF
+                    motors.map_horizontal(control_value)
                 else:
                     # 无输入时停止电机
                     motors.m1.stop()
 
                 # 电机2：上下（使用左摇杆Y轴）
-                if abs(left_stick_y) > 0.05:
-                    # 只有当摇杆有明显输入时才控制
-                    motors.map_vertical(left_stick_y * TURN_COEFF)
+                if abs(left_stick_y) > 0.02:  # 降低死区阈值，提高响应性
+                    # 应用平方函数使控制更平滑，同时保持方向
+                    control_value = (left_stick_y * abs(left_stick_y)) * TURN_COEFF
+                    motors.map_vertical(control_value)
+                    motors.m2.previous_command['value'] = None  # 强制更新命令，消除方向切换延迟
                 else:
                     # 无输入时停止电机
                     motors.m2.stop()
