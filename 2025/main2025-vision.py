@@ -6,6 +6,7 @@ sys.path.append(parent_path)
 import time
 import serial
 import threading
+from typing import Optional
 
 from transitions import Machine
 
@@ -17,14 +18,14 @@ from ToolKits.ToolBox import get_time
 from ToolKits.Timer import busy_maintain_target_frequency
 
 from config import BAUDRATE, TIMEOUT, get_config
-from predict import UnetPackage
+from predict_2025 import UnetPackage
 
 # 电机控制参数
 FORWARD_COEFF = 100  # 前进/后退速度系数
 TURN_COEFF = 50     # 转向速度系数（降为一半）
 # 视觉侧输出的 x>0 表示需要顺时针旋转，因此需要在此处做一次符号映射
 # 如果硬件接线导致方向相反，只需把该值改成 1.0
-HORIZONTAL_CLOCKWISE_SIGN = -1.0
+HORIZONTAL_CLOCKWISE_SIGN = 1.0
 
 
 #############################################################总开关####################################################################################################
@@ -33,8 +34,8 @@ CAMERA_SWITCH = True
 # CAMERA_SWITCH = False
 
 # 是否开启机器人控制线程？
-# ROBOT_SWITCH = True
-ROBOT_SWITCH = False
+ROBOT_SWITCH = True
+# ROBOT_SWITCH = False
 
 
 def video_processing() -> None:
@@ -181,7 +182,27 @@ class VisionRobotStateMachine:
             'VisionControl': self.loop_vision_control,
         }
 
+        # 显式设置初始状态
+        self.state = 'Idle'
+        
+        # 灵敏度系数（在视觉模式时会降低）
+        self.sensitivity_multiplier = 1.0
+
         self.state_thread = threading.Thread(target=self._state_loop, name="robot_state_loop")
+
+        # 打印初始化完成提示
+        print(
+            f"{get_time()}-初始化完成，进入空闲状态：\n"
+            f"  START  -> 切换到手动控制\n"
+            f"  Y      -> 切换到视觉自主\n"
+            f"  BACK   -> 退出程序\n"
+            f"  X      -> 电机回零\n"
+            f"  A      -> 将当前位置写入零点\n"
+            f"  右扳机(RT) -> 前进\n"
+            f"  左扳机(LT) -> 后退\n"
+            f"  右摇杆X(RX) -> 左右转向\n"
+            f"  左摇杆Y(LY) -> 上下调节"
+        )
 
     def start(self) -> None:
         self.state_thread.start()
@@ -189,10 +210,10 @@ class VisionRobotStateMachine:
     def join(self) -> None:
         self.state_thread.join()
 
-    def request_shutdown(self, reason: str | None = None) -> None:
+    def request_shutdown(self, reason: Optional[str] = None) -> None:
         if reason:
             print(reason)
-        if self.machine.state != 'Idle':
+        if self.state != 'Idle':
             self._transition_to_idle()
         self.shutdown_event.set()
 
@@ -210,6 +231,7 @@ class VisionRobotStateMachine:
         self.motors.shutdown_all()
 
     def on_enter_ManualControl(self) -> None:
+        self.sensitivity_multiplier = 1.0
         print(
             f"{get_time()}-状态切换：手动控制\n"
             f"  START -> 空闲断电\n"
@@ -220,8 +242,12 @@ class VisionRobotStateMachine:
         )
 
     def on_enter_VisionControl(self) -> None:
+        # 初始灵敏度设为0.5（用于快速接近）
+        self.sensitivity_multiplier = 0.5
         print(
-            f"{get_time()}-状态切换：视觉自主控制\n"
+            f"{get_time()}-状态切换：视觉自主控制（自适应灵敏度）\n"
+            f"  距离远：灵敏度 0.5（快速接近）\n"
+            f"  距离近：灵敏度 0.3（精准瞄准）\n"
             f"  START -> 切回手动\n"
             f"  B     -> 空闲断电\n"
             f"  X     -> 电机回零\n"
@@ -244,7 +270,7 @@ class VisionRobotStateMachine:
             self._set_zero_point()
 
     def loop_manual_control(self) -> None:
-        if self._handle_common_controls(next_idle_trigger='START', next_vision_trigger='Y'):
+        if self._handle_common_controls(next_idle_trigger='START', next_vision_trigger='Y', allow_set_zero_point=True):
             return
 
         right_trigger = self.xbox.get_trigger_value('RT')
@@ -281,10 +307,12 @@ class VisionRobotStateMachine:
             self.motors.m2.stop()
 
     def loop_vision_control(self) -> None:
-        if self._handle_common_controls(next_idle_trigger='B', next_vision_trigger=None, allow_vision_toggle=False):
+        # 视觉模式下禁止A按钮写零点
+        if self._handle_common_controls(next_idle_trigger='B', next_vision_trigger=None, allow_vision_toggle=False, allow_set_zero_point=False):
             return
 
-        forward_speed = self._safe_float(get_config('speed_pf'))
+        # forward_speed = self._safe_float(get_config('speed_pf'))
+        # 暂时注释掉前进后退功能，仅测试转向
 
         speed_pt = get_config('speed_pt')
 
@@ -302,17 +330,58 @@ class VisionRobotStateMachine:
             if len(speed_pt) >= 2:
                 vertical_input = self._safe_float(speed_pt[1])
 
-        # x > 0 (原“右侧”) -> 顺时针，因此做一次符号映射
-        horizontal_speed = self._clamp(horizontal_input * HORIZONTAL_CLOCKWISE_SIGN, TURN_COEFF)
-        vertical_speed = self._clamp(vertical_input, TURN_COEFF)
+        # 动态调整灵敏度：根据目标偏离距离，使用三级加速策略
+        # 距离 = sqrt(horizontal_input^2 + vertical_input^2)
+        distance_to_target = (horizontal_input ** 2 + vertical_input ** 2) ** 0.5
+        
+        # 三级加速策略：远/中/近
+        # 远距离（>60）：最大速度0.9，快速接近
+        # 中距离（10-60）：中等速度0.6，逐步减速
+        # 近距离（<10）：微调速度0.2，精准瞄准
+        FAST_THRESHOLD = 60.0    # 超过60时，使用快速接近
+        NORMAL_THRESHOLD = 20.0  # 低于10时，使用精准微调
+        
+        if distance_to_target > FAST_THRESHOLD:
+            # 远距离：快速接近模式（最大速度）
+            self.sensitivity_multiplier = 0.8
+        elif distance_to_target > NORMAL_THRESHOLD:
+            # 中距离：过渡模式，线性插值从0.9到0.2
+            ratio = (distance_to_target - NORMAL_THRESHOLD) / (FAST_THRESHOLD - NORMAL_THRESHOLD)
+            self.sensitivity_multiplier = 0.2 + ratio * 0.7  # 从0.2到0.9
+        else:
+            # 近距离：微调模式（低速精准）
+            # 当非常接近时（<3），使用极低速度确保停稳
+            if distance_to_target < 3.0:
+                self.sensitivity_multiplier = 0.15
+            else:
+                self.sensitivity_multiplier = 0.2
 
-        self.motors.move_forward(self._clamp(forward_speed, FORWARD_COEFF))
+        # x > 0 (原"右侧") -> 顺时针，因此做一次符号映射
+        # 在视觉模式时应用灵敏度降低
+        # 注意：这里直接应用灵敏度到输入值，而不是后面的电机速度
+        horizontal_speed = horizontal_input * HORIZONTAL_CLOCKWISE_SIGN * self.sensitivity_multiplier
+        vertical_speed = vertical_input * self.sensitivity_multiplier
+        
+        # 死区处理：确保极小的值也能被发送（不要被夹死）
+        # 如果计算出的速度很小但不为0，强制设为最小有效值
+        MIN_SPEED = 5.0
+        if 0 < abs(horizontal_speed) < MIN_SPEED:
+            horizontal_speed = MIN_SPEED if horizontal_speed > 0 else -MIN_SPEED
+        if 0 < abs(vertical_speed) < MIN_SPEED:
+            vertical_speed = MIN_SPEED if vertical_speed > 0 else -MIN_SPEED
+        
+        # 钳位（限制最大值）
+        horizontal_speed = self._clamp(horizontal_speed, TURN_COEFF)
+        vertical_speed = self._clamp(vertical_speed, TURN_COEFF)
+
+        # 暂时不控制前进后退
+        # self.motors.move_forward(forward_adjusted)
         self.motors.map_horizontal(horizontal_speed)
         self.motors.map_vertical(vertical_speed)
         self.motors.m2.previous_command['value'] = None
 
         print(
-            f"\r视觉控制 F={forward_speed:.1f} HX={horizontal_speed:.1f} HY={vertical_speed:.1f}",
+            f"\r视觉控制 距离={distance_to_target:.1f} 灵敏度={self.sensitivity_multiplier:.2f} HX={horizontal_speed:.1f} HY={vertical_speed:.1f}",
             end=""
         )
 
@@ -323,7 +392,7 @@ class VisionRobotStateMachine:
         try:
             while not self.shutdown_event.is_set():
                 t0 = time.perf_counter()
-                handler = self.state_handlers.get(self.machine.state)
+                handler = self.state_handlers.get(self.state)
                 if handler:
                     handler()
                 busy_maintain_target_frequency(60, t0)
@@ -345,16 +414,17 @@ class VisionRobotStateMachine:
 
     def _handle_common_controls(
         self,
-        next_idle_trigger: str | None,
-        next_vision_trigger: str | None,
+        next_idle_trigger: Optional[str],
+        next_vision_trigger: Optional[str],
         allow_vision_toggle: bool = True,
+        allow_set_zero_point: bool = True,
     ) -> bool:
         if self._handle_back_button():
             return True
         if self.xbox.is_button_pressed('X'):
             self._perform_angle_return()
             return True
-        if self.xbox.is_button_pressed('A'):
+        if allow_set_zero_point and self.xbox.is_button_pressed('A'):
             self._set_zero_point()
         if next_idle_trigger and self.xbox.is_button_pressed(next_idle_trigger):
             self._transition_to_idle()
@@ -362,7 +432,7 @@ class VisionRobotStateMachine:
         if allow_vision_toggle and next_vision_trigger and self.xbox.is_button_pressed(next_vision_trigger):
             self._transition_to_vision()
             return True
-        if self.machine.state == 'VisionControl' and self.xbox.is_button_pressed('START'):
+        if self.state == 'VisionControl' and self.xbox.is_button_pressed('START'):
             self._transition_to_manual()
             return True
         return False
@@ -397,13 +467,16 @@ class VisionRobotStateMachine:
             return 0.0
 
     def _transition_to_idle(self) -> None:
-        self.machine.trigger('enter_idle')
+        self.state = 'Idle'
+        self.on_enter_Idle()
 
     def _transition_to_manual(self) -> None:
-        self.machine.trigger('activate_manual')
+        self.state = 'ManualControl'
+        self.on_enter_ManualControl()
 
     def _transition_to_vision(self) -> None:
-        self.machine.trigger('activate_vision')
+        self.state = 'VisionControl'
+        self.on_enter_VisionControl()
 
 
 def robot_thread() -> None:
