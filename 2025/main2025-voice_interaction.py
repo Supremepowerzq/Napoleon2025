@@ -7,7 +7,11 @@ import time
 import serial
 import threading
 import queue
-from typing import Optional, Tuple, Dict, Any, Callable
+from datetime import datetime
+from typing import Optional, Tuple, Dict, Any, Callable, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import tkinter as tk
 
 # 优先使用百度语音识别（中文识别效果更好）
 try:
@@ -55,12 +59,18 @@ HORIZONTAL_CLOCKWISE_SIGN = 1.0
 VOICE_SWITCH = True
 VOICE_WAKE_WORD = "你好助手"  # 更容易识别的唤醒词
 VOICE_RECOGNITION_LANGUAGE = "zh-CN"
+# 当摄像头线程占用默认麦克风时，可以通过该索引指定专用麦克风
+# 设置为 None 表示使用系统默认输入设备；若需手动指定，请在
+#   python -m speech_recognition
+# 中查看设备列表并填入对应索引
+VOICE_MIC_DEVICE_INDEX: Optional[int] = 0
 
 # 百度语音识别配置（需要到 https://ai.baidu.com/ 申请）
 # 如果未配置，将回退到 speech_recognition
-BAIDU_APP_ID = ""  # 百度语音识别 APP ID
-BAIDU_API_KEY = ""  # 百度语音识别 API Key
-BAIDU_SECRET_KEY = ""  # 百度语音识别 Secret Key
+# 这里与测试脚本保持一致
+BAIDU_APP_ID = "7271638"  # 百度语音识别 APP ID
+BAIDU_API_KEY = "sHhvqZyhyh2decNp6Q75rEc8"  # 百度语音识别 API Key
+BAIDU_SECRET_KEY = "c1u9Rzeca7FSxabjxJUlGHqckjjOgozD"  # 百度语音识别 Secret Key
 STANDARD_VOICE_COMMANDS = {
     "切换为手动模式": "manual",
     "切换为自动模式": "vision",
@@ -98,7 +108,7 @@ def video_processing() -> None:
         m_unet_package.video()
 
 
-class RoundedButton(tk.Canvas):
+class RoundedButton(tk.Canvas if tk is not None else object):  # type: ignore[misc]
     def __init__(self, master, text, width=120, height=40, corner_radius=10, 
                  bg="#2196F3", fg="white", command=None, 
                  hover_bg="#1976D2", press_bg="#0D47A1"):
@@ -205,7 +215,7 @@ class RoundedButton(tk.Canvas):
 
 
 
-class ArrowButton(tk.Canvas):
+class ArrowButton(tk.Canvas if tk is not None else object):  # type: ignore[misc]
     def __init__(self, master, direction="up", width=60, height=60, bg="#4CAF50", 
                  fg="white", hover_bg="#45a049", press_bg="#3d8b40", 
                  on_press=None, on_release=None, corner_radius=10):
@@ -313,7 +323,7 @@ class ArrowButton(tk.Canvas):
                 self.on_release_callback()
 
 
-class DirectionalControlWidget(tk.Canvas):
+class DirectionalControlWidget(tk.Canvas if tk is not None else object):  # type: ignore[misc]
     def __init__(self, master, width=200, height=200, bg="white", 
                  on_motor1_change=None, on_motor2_change=None):
         super().__init__(master, width=width, height=height, bg=bg, highlightthickness=0)
@@ -422,9 +432,6 @@ class DirectionalControlWidget(tk.Canvas):
         self._draw()
         if self.on_motor2_change:
             self.on_motor2_change(val)
-
-
-
 class VoiceStatusWindow:
     """Tk窗口：展示语音识别及状态信息"""
 
@@ -476,7 +483,7 @@ class VoiceStatusWindow:
 
             self.root = tk.Tk()
             self.root.title("Napoleon2025 - 智能控制终端")
-            self.root.geometry("800x1000")
+            self.root.geometry("800x1300")
             self.root.configure(bg="#f0f2f5")  # 浅灰背景，类似现代应用
 
             # 主容器，模拟卡片效果
@@ -549,12 +556,11 @@ class VoiceStatusWindow:
             # 右侧：Arrow控制前进后退
             right_control = tk.Frame(manual_control_frame, bg="white")
             right_control.pack(side=tk.RIGHT, padx=20)
-            
             tk.Label(right_control, text="前进/后退 (M0)", font=("Microsoft YaHei", 10, "bold"), bg="white").pack(pady=5)
-            
+
             arrow_container = tk.Frame(right_control, bg="white")
             arrow_container.pack()
-            
+
             ArrowButton(
                 arrow_container,
                 direction="up",
@@ -566,7 +572,7 @@ class VoiceStatusWindow:
                 on_press=lambda: self._on_motor_control(0, 1.0),
                 on_release=lambda: self._on_motor_control(0, 0.0)
             ).pack(pady=5)
-            
+
             ArrowButton(
                 arrow_container,
                 direction="down",
@@ -750,6 +756,7 @@ class VoiceCommandCenter:
         self.microphone: Any = None
         self._sr: Any = None
         self._pyaudio: Any = None
+        self.mic_device_index: Optional[int] = VOICE_MIC_DEVICE_INDEX
         
         # 优先使用百度语音识别
         if baidu_speech and AipSpeech and BAIDU_APP_ID and BAIDU_API_KEY and BAIDU_SECRET_KEY:
@@ -774,11 +781,19 @@ class VoiceCommandCenter:
                 )
             self._sr = sr
             self.recognizer = self._sr.Recognizer()
-            self.microphone = self._sr.Microphone()
+            mic_kwargs: Dict[str, Any] = {}
+            if VOICE_MIC_DEVICE_INDEX is not None:
+                mic_kwargs["device_index"] = VOICE_MIC_DEVICE_INDEX
+            self.microphone = self._sr.Microphone(**mic_kwargs)
+            self._pyaudio = pyaudio
+            if self.window and VOICE_MIC_DEVICE_INDEX is not None:
+                self.window.push_log(f"已锁定麦克风设备索引：{VOICE_MIC_DEVICE_INDEX}")
 
     def start(self) -> None:
         if self.window:
             self.window.push_log("语音模块已就绪")
+            if self.mic_device_index is not None:
+                self.window.push_log(f"当前使用的麦克风设备索引：{self.mic_device_index}")
         
         if self.use_baidu:
             if self.window:
@@ -800,6 +815,8 @@ class VoiceCommandCenter:
         """使用 pyaudio 录制音频（百度格式：16k采样率，16bit，单声道）"""
         if not self._pyaudio:
             return None
+        p = None
+        stream = None
         try:
             chunk = 1024
             sample_format = self._pyaudio.paInt16
@@ -807,34 +824,66 @@ class VoiceCommandCenter:
             fs = 16000  # 百度要求16k采样率
             
             p = self._pyaudio.PyAudio()
-            stream = p.open(
+            stream_kwargs = dict(
                 format=sample_format,
                 channels=channels,
                 rate=fs,
                 frames_per_buffer=chunk,
-                input=True
+                input=True,
             )
+            if self.mic_device_index is not None:
+                stream_kwargs["input_device_index"] = self.mic_device_index
+            stream = p.open(**stream_kwargs)
             
             frames = []
             if stop_event:
                 # 手动录音模式：持续录音直到stop_event被设置
+                # 使用非阻塞读取，以便能及时响应stop_event
                 while not stop_event.is_set():
-                    data = stream.read(chunk, exception_on_overflow=False)
-                    frames.append(data)
+                    try:
+                        data = stream.read(chunk, exception_on_overflow=False)
+                        if data:
+                            frames.append(data)
+                    except Exception as e:
+                        # 读取错误，继续尝试
+                        if self.window:
+                            self.window.push_log(f"录音读取警告：{e}")
+                        break
+                
+                # 停止事件已设置，再读取一次以确保获取所有缓冲数据
+                try:
+                    remaining = stream.get_read_available()
+                    if remaining > 0:
+                        data = stream.read(remaining, exception_on_overflow=False)
+                        if data:
+                            frames.append(data)
+                except:
+                    pass
             else:
                 # 自动录音模式：按duration时长录音
                 for _ in range(0, int(fs / chunk * duration)):
                     data = stream.read(chunk)
                     frames.append(data)
             
-            stream.stop_stream()
-            stream.close()
-            p.terminate()
+            if stream:
+                stream.stop_stream()
+                stream.close()
+            if p:
+                p.terminate()
             
-            return b''.join(frames)
+            audio_data = b''.join(frames)
+            return audio_data if len(audio_data) > 0 else None
         except Exception as exc:
             if self.window:
                 self.window.push_log(f"录音失败：{exc}")
+            try:
+                if stream:
+                    stream.stop_stream()
+                    stream.close()
+                if p:
+                    p.terminate()
+            except:
+                pass
             return None
     
     def start_manual_record(self) -> None:
@@ -845,9 +894,13 @@ class VoiceCommandCenter:
                     self.window.push_log("录音功能不可用：缺少pyaudio库")
                 return
         else:
-            if not self._sr or not self.microphone:
+            if not self._sr:
                 if self.window:
-                    self.window.push_log("录音功能不可用：缺少必要的库")
+                    self.window.push_log("录音功能不可用：缺少speech_recognition库")
+                return
+            if not self._pyaudio:
+                if self.window:
+                    self.window.push_log("录音功能不可用：缺少pyaudio库")
                 return
         
         self.manual_record_stop_event.clear()
@@ -859,55 +912,68 @@ class VoiceCommandCenter:
             if self.window:
                 self.window.update_recording_status(True)
             
-            if self.use_baidu and self._pyaudio:
-                # 使用百度录音方式
-                audio = self._record_audio_baidu(duration=0, stop_event=self.manual_record_stop_event)
-                with self.manual_record_lock:
-                    self.manual_record_audio = audio
-            elif self._sr and self.microphone:
-                # 使用speech_recognition录音
-                try:
-                    with self.microphone as source:
-                        # 持续录音直到stop_event被设置
-                        audio_obj = None
-                        while not self.manual_record_stop_event.is_set():
-                            try:
-                                audio_obj = self.recognizer.listen(source, timeout=0.5, phrase_time_limit=10)
-                                break
-                            except self._sr.WaitTimeoutError:
-                                continue
-                        if audio_obj:
-                            with self.manual_record_lock:
-                                self.manual_record_audio_obj = audio_obj
-                except Exception as exc:
-                    if self.window:
-                        self.window.push_log(f"录音失败：{exc}")
+            try:
+                if self._pyaudio:
+                    audio = self._record_audio_baidu(duration=0, stop_event=self.manual_record_stop_event)
+                else:
+                    audio = None
+                if self.use_baidu:
                     with self.manual_record_lock:
-                        self.manual_record_audio_obj = None
-            
-            if self.window:
-                self.window.update_recording_status(False)
+                        self.manual_record_audio = audio
+                    if self.window and audio:
+                        self.window.push_log(f"录音完成，长度: {len(audio)} 字节")
+                else:
+                    if self.window:
+                        self.window.push_log("已连接到麦克风，开始录音...")
+                    if audio:
+                        audio_obj = self._sr.AudioData(audio, 16000, 2)
+                        with self.manual_record_lock:
+                            self.manual_record_audio_obj = audio_obj
+                        if self.window:
+                            self.window.push_log(f"录音完成，长度 {len(audio)} 字节")
+                    else:
+                        with self.manual_record_lock:
+                            self.manual_record_audio_obj = None
+                        if self.window:
+                            self.window.push_log("录音时间太短，未捕获到有效音频")
+            finally:
+                if self.window:
+                    self.window.update_recording_status(False)
         
         self.manual_recording_thread = threading.Thread(target=record_thread, daemon=True)
         self.manual_recording_thread.start()
     
     def stop_manual_record(self) -> None:
         """停止手动录音并识别"""
+        # 设置停止事件
         self.manual_record_stop_event.set()
-        # 等待录音线程完成
-        if self.manual_recording_thread and self.manual_recording_thread.is_alive():
-            self.manual_recording_thread.join(timeout=1.0)
         
+        # 等待录音线程完成，增加等待时间到3秒
+        if self.manual_recording_thread and self.manual_recording_thread.is_alive():
+            self.manual_recording_thread.join(timeout=3.0)
+            if self.manual_recording_thread.is_alive():
+                if self.window:
+                    self.window.push_log("警告：录音线程未在预期时间内完成")
+        
+        # 读取录音数据
         with self.manual_record_lock:
             audio = self.manual_record_audio
             audio_obj = self.manual_record_audio_obj
             self.manual_record_audio = None
             self.manual_record_audio_obj = None
         
+        # 处理录音数据
         if self.use_baidu:
             if not audio or len(audio) == 0:
                 if self.window:
-                    self.window.push_log("录音为空，请重新尝试")
+                    self.window.push_log("录音为空，请重新尝试（可能录音时间太短）")
+                return
+            
+            # 检查最小录音长度（至少0.5秒，约16000*0.5=8000字节）
+            min_audio_length = 8000
+            if len(audio) < min_audio_length:
+                if self.window:
+                    self.window.push_log(f"录音太短（{len(audio)}字节），请至少录音0.5秒")
                 return
             
             # 使用百度识别
@@ -926,28 +992,83 @@ class VoiceCommandCenter:
         elif self._sr:
             if not audio_obj:
                 if self.window:
-                    self.window.push_log("录音为空，请重新尝试")
+                    self.window.push_log("录音为空，请重新尝试（可能录音时间太短）")
                 return
             
-            # 使用speech_recognition识别
+            # 使用speech_recognition识别（带重试机制）
             if self.window:
                 self.window.push_log("正在识别...")
-            try:
-                text = self.recognizer.recognize_google(audio_obj, language=VOICE_RECOGNITION_LANGUAGE)
-                if text:
-                    self._handle_text(text.strip(), force_process=True)
-                else:
+            
+            # 重试机制：最多重试3次
+            max_retries = 3
+            retry_count = 0
+            text = None
+            
+            while retry_count < max_retries:
+                try:
+                    # 设置超时时间，避免长时间等待
+                    text = self.recognizer.recognize_google(
+                        audio_obj, 
+                        language=VOICE_RECOGNITION_LANGUAGE,
+                        show_all=False
+                    )
+                    if text:
+                        break  # 成功识别，退出重试循环
+                except self._sr.UnknownValueError:
+                    # 无法识别语音内容，不需要重试
                     if self.window:
                         self.window.push_log("未识别到有效语音")
-            except self._sr.UnknownValueError:
+                    break
+                except self._sr.RequestError as exc:
+                    retry_count += 1
+                    error_msg = str(exc)
+                    if self.window:
+                        if retry_count < max_retries:
+                            self.window.push_log(f"识别服务错误（重试 {retry_count}/{max_retries}）：{error_msg}")
+                            time.sleep(0.5)  # 等待0.5秒后重试
+                        else:
+                            self.window.push_log(f"识别服务错误（已重试{max_retries}次）：{error_msg}")
+                            self.window.push_log("提示：Google语音识别服务暂时不可用，请稍后重试")
+                except (ConnectionError, OSError) as exc:
+                    # 网络连接错误（包括 WinError 10054）
+                    retry_count += 1
+                    error_msg = str(exc)
+                    error_code = getattr(exc, 'winerror', None) or getattr(exc, 'errno', None)
+                    if error_code == 10054 or '10054' in error_msg or '连接' in error_msg or 'connection' in error_msg.lower():
+                        # 这是连接被重置的错误
+                        if self.window:
+                            if retry_count < max_retries:
+                                self.window.push_log(f"网络连接被重置（重试 {retry_count}/{max_retries}），正在重新连接...")
+                                time.sleep(1.5)  # 网络错误等待更长时间
+                            else:
+                                self.window.push_log(f"网络连接错误（已重试{max_retries}次）：{error_msg}")
+                                self.window.push_log("提示：请检查网络连接或稍后重试")
+                    else:
+                        # 其他网络错误
+                        if self.window:
+                            if retry_count < max_retries:
+                                self.window.push_log(f"网络连接错误（重试 {retry_count}/{max_retries}）：{error_msg}")
+                                time.sleep(1.0)
+                            else:
+                                self.window.push_log(f"网络连接错误（已重试{max_retries}次）：{error_msg}")
+                                self.window.push_log("提示：请检查网络连接或稍后重试")
+                except Exception as exc:
+                    # 其他未知错误
+                    retry_count += 1
+                    error_msg = str(exc)
+                    if self.window:
+                        if retry_count < max_retries:
+                            self.window.push_log(f"识别失败（重试 {retry_count}/{max_retries}）：{error_msg}")
+                            time.sleep(0.5)
+                        else:
+                            self.window.push_log(f"识别失败（已重试{max_retries}次）：{error_msg}")
+            
+            # 处理识别结果
+            if text:
+                self._handle_text(text.strip(), force_process=True)
+            elif retry_count >= max_retries:
                 if self.window:
-                    self.window.push_log("未识别到有效语音")
-            except self._sr.RequestError as exc:
-                if self.window:
-                    self.window.push_log(f"识别服务错误：{exc}")
-            except Exception as exc:
-                if self.window:
-                    self.window.push_log(f"识别失败：{exc}")
+                    self.window.push_log("识别失败：已达到最大重试次数")
 
     def _recognize_baidu(self, audio_data: bytes) -> Optional[str]:
         """使用百度API识别语音"""
@@ -1026,88 +1147,140 @@ class MotorGroup2025:
         # 电机限位角度（度）
         self.m1_limit = (-90, 90)  # 电机1的限位：左右90度
         self.m2_limit = (-30, 30)  # 电机2的限位：上下30度
+        
+        # 串口访问锁，防止UI控制和手柄控制同时访问串口
+        self.serial_lock = threading.Lock()
 
     def get_angles(self) -> tuple:
         """获取各电机当前角度（度）"""
-        # 更新所有电机状态
-        self.m0.update_state()
-        self.m1.update_state()
-        self.m2.update_state()
-        # 返回位置信息
-        return (self.m0.position, self.m1.position, self.m2.position)
+        with self.serial_lock:
+            try:
+                # 更新所有电机状态
+                self.m0.update_state()
+                self.m1.update_state()
+                self.m2.update_state()
+                # 返回位置信息
+                return (self.m0.position, self.m1.position, self.m2.position)
+            except (ValueError, Exception) as exc:
+                # 如果更新状态失败，返回上次已知的位置或默认值
+                print(f"{get_time()}-获取角度失败: {exc}")
+                try:
+                    return (self.m0.position, self.m1.position, self.m2.position)
+                except:
+                    return (0.0, 0.0, 0.0)
 
     def move_forward(self, speed_forward: float) -> None:
-        self.m0.set_speed(speed_forward)
+        with self.serial_lock:
+            try:
+                self.m0.set_speed(speed_forward)
+            except (ValueError, Exception) as exc:
+                print(f"{get_time()}-电机M0控制错误: {exc}")
 
     def map_horizontal(self, value: float) -> None:
-        # 获取当前角度
-        self.m1.update_state()
-        current_angle = self.m1.position
-        # 检查限位
-        if (value > 0 and current_angle >= self.m1_limit[1]) or \
-           (value < 0 and current_angle <= self.m1_limit[0]):
-            # 到达限位，停止对应方向的运动
-            self.m1.stop()
-            return
-        # 在限位范围内，正常控制
-        self.m1.set_speed(value)
+        with self.serial_lock:
+            try:
+                # 获取当前角度
+                self.m1.update_state()
+                current_angle = self.m1.position
+                # 检查限位
+                if (value > 0 and current_angle >= self.m1_limit[1]) or \
+                   (value < 0 and current_angle <= self.m1_limit[0]):
+                    # 到达限位，停止对应方向的运动
+                    self.m1.stop()
+                    return
+                # 在限位范围内，正常控制
+                self.m1.set_speed(value)
+            except (ValueError, Exception) as exc:
+                print(f"{get_time()}-电机M1控制错误: {exc}")
 
     def map_vertical(self, value: float) -> None:
-        # 获取当前角度
-        self.m2.update_state()
-        current_angle = self.m2.position
-        # 检查限位
-        if (value > 0 and current_angle >= self.m2_limit[1]) or \
-           (value < 0 and current_angle <= self.m2_limit[0]):
-            # 到达限位，停止对应方向的运动
-            self.m2.stop()
-            return
-        # 在限位范围内，正常控制
-        self.m2.set_speed(value)
+        with self.serial_lock:
+            try:
+                # 获取当前角度
+                self.m2.update_state()
+                current_angle = self.m2.position
+                # 检查限位
+                if (value > 0 and current_angle >= self.m2_limit[1]) or \
+                   (value < 0 and current_angle <= self.m2_limit[0]):
+                    # 到达限位，停止对应方向的运动
+                    self.m2.stop()
+                    return
+                # 在限位范围内，正常控制
+                self.m2.set_speed(value)
+            except (ValueError, Exception) as exc:
+                print(f"{get_time()}-电机M2控制错误: {exc}")
 
     def angle_return(self) -> bool:
         """电机归零，使用位置闭环控制"""
-        finish = True
+        with self.serial_lock:
+            finish = True
+            try:
+                # 一次性更新两个电机状态
+                self.m1.update_state()
+                self.m2.update_state()
 
-        # 一次性更新两个电机状态
-        self.m1.update_state()
-        self.m2.update_state()
+                # 获取当前角度
+                current_angle1 = self.m1.position
+                current_angle2 = self.m2.position
 
-        # 获取当前角度
-        current_angle1 = self.m1.position
-        current_angle2 = self.m2.position
-
-        # 电机1：使用位置闭环，精确归零
-        if abs(current_angle1) > 0.1:  # 降低阈值提高精度
-            self.m1.set_position(0, max_speed=TURN_COEFF/2)  # 降低速度提高精度
-            finish = False
-        
-        # 电机2：使用位置闭环，精确归零
-        if abs(current_angle2) > 0.1:
-            self.m2.set_position(0, max_speed=TURN_COEFF/3)  # 使用更低的速度
-            finish = False
-        
-        if finish:
-            # 完全停止
-            self.m1.stop()
-            self.m2.stop()
+                # 电机1：使用位置闭环，精确归零
+                if abs(current_angle1) > 0.1:  # 降低阈值提高精度
+                    self.m1.set_position(0, max_speed=TURN_COEFF/2)  # 降低速度提高精度
+                    finish = False
+                
+                # 电机2：使用位置闭环，精确归零
+                if abs(current_angle2) > 0.1:
+                    self.m2.set_position(0, max_speed=TURN_COEFF/3)  # 使用更低的速度
+                    finish = False
+                
+                if finish:
+                    # 完全停止
+                    self.m1.stop()
+                    self.m2.stop()
+            except (ValueError, Exception) as exc:
+                print(f"{get_time()}-角度归零错误: {exc}")
+                finish = True  # 出错时认为已完成，避免卡死
         
         return finish
 
     def set_current_position_as_zero_point(self) -> None:
-        self.m1.set_current_position_as_zero_point()
-        self.m2.set_current_position_as_zero_point()
+        with self.serial_lock:
+            try:
+                self.m1.set_current_position_as_zero_point()
+                self.m2.set_current_position_as_zero_point()
+            except Exception as exc:
+                print(f"{get_time()}-设置零点错误: {exc}")
 
     def stop(self) -> None:
-        self.m0.stop()
-        self.m1.stop()
-        self.m2.stop()
+        with self.serial_lock:
+            try:
+                self.m0.stop()
+            except Exception:
+                pass
+            try:
+                self.m1.stop()
+            except Exception:
+                pass
+            try:
+                self.m2.stop()
+            except Exception:
+                pass
 
     def shutdown_all(self) -> None:
         # 关闭输出，进入空闲可自由转动
-        self.m0.shutdown()
-        self.m1.shutdown()
-        self.m2.shutdown()
+        with self.serial_lock:
+            try:
+                self.m0.shutdown()
+            except Exception:
+                pass
+            try:
+                self.m1.shutdown()
+            except Exception:
+                pass
+            try:
+                self.m2.shutdown()
+            except Exception:
+                pass
 
 
 class VisionRobotStateMachine:
@@ -1118,7 +1291,15 @@ class VisionRobotStateMachine:
     def __init__(self) -> None:
         print(f"{get_time()}-main2025 启动：初始化手柄与电机...")
 
-        self.xbox = XboxController()
+        self.xbox: Optional[XboxController] = None
+        self.controller_available = False
+        try:
+            self.xbox = XboxController()
+            self.controller_available = True
+            print(f"{get_time()}-检测到手柄：已启用硬件联动控制")
+        except Exception as exc:
+            self.xbox = None
+            print(f"{get_time()}-未检测到手柄，默认为纯UI控制（{exc}）")
 
         port = find_rmd_motor_port(0)
         if port is None:
@@ -1128,6 +1309,7 @@ class VisionRobotStateMachine:
         self.motors = MotorGroup2025(self.ser)
 
         self.shutdown_event = threading.Event()
+        self.ui_command_queue: "queue.Queue[Tuple[str, str]]" = queue.Queue()
 
         self.machine = Machine(
             model=self,
@@ -1154,6 +1336,10 @@ class VisionRobotStateMachine:
         
         # 灵敏度系数（在视觉模式时会降低）
         self.sensitivity_multiplier = 1.0
+
+        self.manual_input_lock = threading.Lock()
+        self.ui_manual_input = {'forward': 0.0, 'horizontal': 0.0, 'vertical': 0.0}
+        self.controller_manual_input = {'forward': 0.0, 'horizontal': 0.0, 'vertical': 0.0}
 
         self.state_thread = threading.Thread(target=self._state_loop, name="robot_state_loop")
 
@@ -1203,6 +1389,7 @@ class VisionRobotStateMachine:
         )
         self.motors.stop()
         self._update_voice_state("空闲保持")
+        self._clear_manual_inputs()
 
     def on_enter_ManualControl(self) -> None:
         self.sensitivity_multiplier = 1.0
@@ -1216,6 +1403,7 @@ class VisionRobotStateMachine:
             f"  BACK  -> 退出程序"
         )
         self._update_voice_state("手动控制")
+        self._clear_manual_inputs()
 
     def on_enter_VisionControl(self) -> None:
         # 初始灵敏度设为0.5（用于快速接近）
@@ -1230,6 +1418,7 @@ class VisionRobotStateMachine:
             f"  BACK  -> 退出程序"
         )
         self._update_voice_state("视觉自主控制")
+        self._clear_manual_inputs()
 
     def on_enter_PowerOff(self) -> None:
         self._log_prompt(
@@ -1240,6 +1429,7 @@ class VisionRobotStateMachine:
         self.motors.stop()
         self.motors.shutdown_all()
         self._update_voice_state("断电维护")
+        self._clear_manual_inputs()
 
     # ---------------------------
     # 状态循环
@@ -1247,16 +1437,16 @@ class VisionRobotStateMachine:
     def loop_idle(self) -> None:
         if self._handle_back_button():
             return
-        if self.xbox.is_button_pressed('START'):
+        if self._controller_button_pressed('START'):
             self._transition_to_manual()
             return
-        if self.xbox.is_button_pressed('Y'):
+        if self._controller_button_pressed('Y'):
             self._transition_to_vision()
             return
-        if self.xbox.is_button_pressed('B'):
+        if self._controller_button_pressed('B'):
             self._transition_to_poweroff()
             return
-        if self.xbox.is_button_pressed('A'):
+        if self._controller_button_pressed('A'):
             self._set_zero_point()
 
     def loop_manual_control(self) -> None:
@@ -1268,38 +1458,23 @@ class VisionRobotStateMachine:
         ):
             return
 
-        right_trigger = self.xbox.get_trigger_value('RT')
-        left_trigger = self.xbox.get_trigger_value('LT')
-        right_stick_x = self.xbox.get_joystick_value('RX')
-        left_stick_y = self.xbox.get_joystick_value('LY')
+        self._update_controller_inputs()
+        forward_speed, horizontal_speed, vertical_speed = self._resolve_manual_inputs()
+        self._apply_manual_motion(forward_speed, horizontal_speed, vertical_speed)
 
-        angles = self.motors.get_angles()
-        print(
-            f"\r手动控制 "
-            f"扳机(RT={right_trigger:.2f}, LT={left_trigger:.2f}) "
-            f"摇杆(RX={right_stick_x:.2f}, LY={left_stick_y:.2f}) "
-            f"角度(M1={angles[1]:.1f}°, M2={angles[2]:.1f}°)",
-            end=""
-        )
-
-        if abs(right_trigger) > 0.05 or abs(left_trigger) > 0.05:
-            forward_speed = right_trigger * FORWARD_COEFF if right_trigger > 0.05 else (-left_trigger * FORWARD_COEFF)
-            self.motors.move_forward(forward_speed)
-        else:
-            self.motors.m0.stop()
-
-        if abs(right_stick_x) > 0.02:
-            control_value = (right_stick_x * abs(right_stick_x)) * TURN_COEFF
-            self.motors.map_horizontal(control_value)
-        else:
-            self.motors.m1.stop()
-
-        if abs(left_stick_y) > 0.02:
-            control_value = (left_stick_y * abs(left_stick_y)) * TURN_COEFF
-            self.motors.map_vertical(control_value)
-            self.motors.m2.previous_command['value'] = None
-        else:
-            self.motors.m2.stop()
+        try:
+            angles = self.motors.get_angles()
+            source = self._current_manual_source()
+            print(
+                f"\r手动控制[{source}] "
+                f"F={forward_speed:>6.1f} "
+                f"H={horizontal_speed:>6.1f} "
+                f"V={vertical_speed:>6.1f} "
+                f"角度(M1={angles[1]:.1f}°, M2={angles[2]:.1f}°)",
+                end=""
+            )
+        except Exception as exc:
+            print(f"{get_time()}-读取角度失败：{exc}")
 
     def loop_vision_control(self) -> None:
         # 视觉模式下禁止A按钮写零点
@@ -1383,7 +1558,7 @@ class VisionRobotStateMachine:
     def loop_power_off(self) -> None:
         if self._handle_back_button():
             return
-        if self.xbox.is_button_pressed('START'):
+        if self._controller_button_pressed('START'):
             self._transition_to_idle()
     # ---------------------------
     # 内部辅助
@@ -1427,27 +1602,27 @@ class VisionRobotStateMachine:
     ) -> bool:
         if self._handle_back_button():
             return True
-        if self.xbox.is_button_pressed('X'):
+        if self._controller_button_pressed('X'):
             self._perform_angle_return()
             return True
-        if allow_set_zero_point and self.xbox.is_button_pressed('A'):
+        if allow_set_zero_point and self._controller_button_pressed('A'):
             self._set_zero_point()
-        if next_idle_trigger and self.xbox.is_button_pressed(next_idle_trigger):
+        if next_idle_trigger and self._controller_button_pressed(next_idle_trigger):
             self._transition_to_idle()
             return True
-        if allow_vision_toggle and next_vision_trigger and self.xbox.is_button_pressed(next_vision_trigger):
+        if allow_vision_toggle and next_vision_trigger and self._controller_button_pressed(next_vision_trigger):
             self._transition_to_vision()
             return True
-        if self.state == 'VisionControl' and self.xbox.is_button_pressed('START'):
+        if self.state == 'VisionControl' and self._controller_button_pressed('START'):
             self._transition_to_manual()
             return True
-        if poweroff_trigger and self.xbox.is_button_pressed(poweroff_trigger):
+        if poweroff_trigger and self._controller_button_pressed(poweroff_trigger):
             self._transition_to_poweroff()
             return True
         return False
 
     def _handle_back_button(self) -> bool:
-        if self.xbox.is_button_pressed('BACK'):
+        if self._controller_button_pressed('BACK'):
             self.request_shutdown(f"{get_time()}-接收到 BACK，准备退出...")
             return True
         return False
@@ -1524,37 +1699,109 @@ class VisionRobotStateMachine:
     def _on_ui_command(self, cmd: str) -> None:
         """处理UI按钮指令"""
         self._log_prompt(f"{get_time()}-UI指令：{cmd}")
-        self._execute_voice_command(cmd, f"按钮点击-{cmd}")
+        self.ui_command_queue.put((cmd, f"按钮点击-{cmd}"))
     
     def _on_motor_control(self, motor_id: int, value: float) -> None:
-        """处理UI手动控制"""
-        # 根据motor_id调用对应的电机控制
-        # 这里应用一个简单的速度系数 
-        # TURN_COEFF = 360.0  # 与手柄使用相同的系数
-        # FORWARD_COEFF = 360.0
-        
-        if motor_id == 0:  # M0 - 前进/后退
-            speed = value * FORWARD_COEFF
-            if abs(speed) > 5.0:
-                self.motors.move_forward(speed)
+        """处理UI手动控制，统一到输入缓存"""
+        self._set_ui_manual_input(motor_id, value)
+
+    def _set_ui_manual_input(self, motor_id: int, normalized_value: float) -> None:
+        """将 UI 控件的输入转成速度指令（-1~1 -> 实际速度）"""
+        with self.manual_input_lock:
+            if motor_id == 0:
+                scaled = normalized_value * FORWARD_COEFF
+                self.ui_manual_input['forward'] = scaled if abs(scaled) >= 1.0 else 0.0
+            elif motor_id == 1:
+                scaled = normalized_value * TURN_COEFF
+                self.ui_manual_input['horizontal'] = scaled if abs(scaled) >= 1.0 else 0.0
+            elif motor_id == 2:
+                scaled = normalized_value * TURN_COEFF
+                self.ui_manual_input['vertical'] = scaled if abs(scaled) >= 1.0 else 0.0
+
+    def _update_controller_inputs(self) -> None:
+        if not self.xbox:
+            with self.manual_input_lock:
+                self.controller_manual_input['forward'] = 0.0
+                self.controller_manual_input['horizontal'] = 0.0
+                self.controller_manual_input['vertical'] = 0.0
+            return
+
+        right_trigger = self.xbox.get_trigger_value('RT')
+        left_trigger = self.xbox.get_trigger_value('LT')
+        right_stick_x = self.xbox.get_joystick_value('RX')
+        left_stick_y = self.xbox.get_joystick_value('LY')
+
+        forward_speed = 0.0
+        if right_trigger > 0.05:
+            forward_speed = right_trigger * FORWARD_COEFF
+        elif left_trigger > 0.05:
+            forward_speed = -left_trigger * FORWARD_COEFF
+
+        horizontal_speed = 0.0
+        if abs(right_stick_x) > 0.02:
+            horizontal_speed = (right_stick_x * abs(right_stick_x)) * TURN_COEFF
+
+        vertical_speed = 0.0
+        if abs(left_stick_y) > 0.02:
+            vertical_speed = (left_stick_y * abs(left_stick_y)) * TURN_COEFF
+
+        with self.manual_input_lock:
+            self.controller_manual_input['forward'] = forward_speed
+            self.controller_manual_input['horizontal'] = horizontal_speed
+            self.controller_manual_input['vertical'] = vertical_speed
+
+    def _resolve_manual_inputs(self) -> Tuple[float, float, float]:
+        """融合 UI 与手柄输入（UI 优先级更高，可逐轴覆盖）"""
+        with self.manual_input_lock:
+            forward = self.ui_manual_input['forward'] if abs(self.ui_manual_input['forward']) > 0.5 \
+                else self.controller_manual_input['forward']
+            horizontal = self.ui_manual_input['horizontal'] if abs(self.ui_manual_input['horizontal']) > 0.5 \
+                else self.controller_manual_input['horizontal']
+            vertical = self.ui_manual_input['vertical'] if abs(self.ui_manual_input['vertical']) > 0.5 \
+                else self.controller_manual_input['vertical']
+        return forward, horizontal, vertical
+
+    def _apply_manual_motion(self, forward_speed: float, horizontal_speed: float, vertical_speed: float) -> None:
+        """统一在主线程驱动电机，避免多源并发"""
+        try:
+            if abs(forward_speed) > 5.0:
+                self.motors.move_forward(forward_speed)
             else:
-                # 停止电机
                 self.motors.m0.stop()
-        elif motor_id == 1:  # M1 -  水平旋转
-            speed = value * TURN_COEFF
-            if abs(speed) > 5.0:
-                self.motors.map_horizontal(speed)
+
+            if abs(horizontal_speed) > 2.0:
+                self.motors.map_horizontal(horizontal_speed)
             else:
-                # 停止电机
                 self.motors.m1.stop()
-        elif motor_id == 2:  # M2 - 俯仰
-            speed = value * TURN_COEFF
-            if abs(speed) > 5.0:
-                self.motors.map_vertical(speed)
+
+            if abs(vertical_speed) > 2.0:
+                self.motors.map_vertical(vertical_speed)
                 self.motors.m2.previous_command['value'] = None
             else:
-                # 停止电机
                 self.motors.m2.stop()
+        except (ValueError, Exception) as exc:
+            error_msg = f"手动控制执行异常：{exc}"
+            print(f"{get_time()}-{error_msg}")
+            if self.voice_window:
+                self.voice_window.push_log(error_msg)
+
+    def _clear_manual_inputs(self) -> None:
+        with self.manual_input_lock:
+            for entry in (self.ui_manual_input, self.controller_manual_input):
+                entry['forward'] = 0.0
+                entry['horizontal'] = 0.0
+                entry['vertical'] = 0.0
+
+    def _current_manual_source(self) -> str:
+        with self.manual_input_lock:
+            if any(abs(v) > 0.5 for v in self.ui_manual_input.values()):
+                return "UI"
+            if any(abs(v) > 0.5 for v in self.controller_manual_input.values()):
+                return "Controller" if self.xbox else "None"
+        return "None"
+
+    def _controller_button_pressed(self, button: str) -> bool:
+        return bool(self.xbox and self.xbox.is_button_pressed(button))
     
     def _on_exit_request(self) -> None:
         """处理退出请求（切换到空闲保持状态）"""
@@ -1562,24 +1809,37 @@ class VisionRobotStateMachine:
         # 切换到空闲状态
         if self.state != 'Idle':
             self._transition_to_idle()
+        self._clear_manual_inputs()
         # 直接设置退出事件，不经过PowerOff
         self.shutdown_event.set()
 
     def _on_record_button(self, is_pressed: bool) -> None:
         """录音按钮按下/释放的回调"""
-        if not self.voice_control:
+        voice_control = self.voice_control
+        if not voice_control:
             return
-        if is_pressed:
-            self.voice_control.start_manual_record()
-        else:
-            self.voice_control.stop_manual_record()
+        def worker():
+            try:
+                if is_pressed:
+                    voice_control.start_manual_record()
+                else:
+                    voice_control.stop_manual_record()
+            except Exception as exc:
+                if self.voice_window:
+                    self.voice_window.push_log(f"录音控制异常：{exc}")
+        threading.Thread(target=worker, daemon=True).start()
 
     def _process_voice_commands(self) -> None:
-        if not self.voice_control:
-            return
+        if self.voice_control:
+            while True:
+                try:
+                    command, raw = self.voice_control.command_queue.get_nowait()
+                except queue.Empty:
+                    break
+                self._execute_voice_command(command, raw)
         while True:
             try:
-                command, raw = self.voice_control.command_queue.get_nowait()
+                command, raw = self.ui_command_queue.get_nowait()
             except queue.Empty:
                 break
             self._execute_voice_command(command, raw)

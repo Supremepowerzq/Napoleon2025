@@ -299,8 +299,8 @@ class VisionRobotStateMachine:
         else:
             self.motors.m1.stop()
 
-        if abs(left_stick_y) > 0.02:
-            control_value = (left_stick_y * abs(left_stick_y)) * TURN_COEFF
+        if abs(left_stick_y) > 0.01:
+            control_value = (left_stick_y * abs(left_stick_y)) * TURN_COEFF 
             self.motors.map_vertical(control_value)
             self.motors.m2.previous_command['value'] = None
         else:
@@ -330,6 +330,9 @@ class VisionRobotStateMachine:
             if len(speed_pt) >= 2:
                 vertical_input = self._safe_float(speed_pt[1])
 
+        horizontal_input = horizontal_input * 2.0
+        vertical_input =  vertical_input * 0.5        
+
         # 动态调整灵敏度：根据目标偏离距离，使用三级加速策略
         # 距离 = sqrt(horizontal_input^2 + vertical_input^2)
         distance_to_target = (horizontal_input ** 2 + vertical_input ** 2) ** 0.5
@@ -338,16 +341,19 @@ class VisionRobotStateMachine:
         # 远距离（>60）：最大速度0.9，快速接近
         # 中距离（10-60）：中等速度0.6，逐步减速
         # 近距离（<10）：微调速度0.2，精准瞄准
-        FAST_THRESHOLD = 60.0    # 超过60时，使用快速接近
-        NORMAL_THRESHOLD = 20.0  # 低于10时，使用精准微调
+        FAST_THRESHOLD = 40.0    # 超过60时，使用快速接近
+        NORMAL_THRESHOLD = 10.0  # 低于10时，使用精准微调
         
         if distance_to_target > FAST_THRESHOLD:
             # 远距离：快速接近模式（最大速度）
             self.sensitivity_multiplier = 0.8
         elif distance_to_target > NORMAL_THRESHOLD:
+        # else:    
             # 中距离：过渡模式，线性插值从0.9到0.2
             ratio = (distance_to_target - NORMAL_THRESHOLD) / (FAST_THRESHOLD - NORMAL_THRESHOLD)
-            self.sensitivity_multiplier = 0.2 + ratio * 0.7  # 从0.2到0.9
+            self.sensitivity_multiplier = 0.2 + ratio * 0.6  # 从0.2到0.9
+
+            # self.sensitivity_multiplier = 0.2
         else:
             # 近距离：微调模式（低速精准）
             # 当非常接近时（<3），使用极低速度确保停稳
@@ -364,15 +370,15 @@ class VisionRobotStateMachine:
         
         # 死区处理：确保极小的值也能被发送（不要被夹死）
         # 如果计算出的速度很小但不为0，强制设为最小有效值
-        MIN_SPEED = 5.0
+        MIN_SPEED = 2.0
         if 0 < abs(horizontal_speed) < MIN_SPEED:
             horizontal_speed = MIN_SPEED if horizontal_speed > 0 else -MIN_SPEED
         if 0 < abs(vertical_speed) < MIN_SPEED:
             vertical_speed = MIN_SPEED if vertical_speed > 0 else -MIN_SPEED
         
-        # 钳位（限制最大值）
-        horizontal_speed = self._clamp(horizontal_speed, TURN_COEFF)
-        vertical_speed = self._clamp(vertical_speed, TURN_COEFF)
+        # # 钳位（限制最大值）
+        # horizontal_speed = self._clamp(horizontal_speed, TURN_COEFF)
+        # vertical_speed = self._clamp(vertical_speed, TURN_COEFF)
 
         # 暂时不控制前进后退
         # self.motors.move_forward(forward_adjusted)

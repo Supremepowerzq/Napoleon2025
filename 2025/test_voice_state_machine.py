@@ -6,8 +6,11 @@
 import time
 import threading
 import queue
-from typing import Optional, Tuple, Dict, Any, Callable
+from typing import Optional, Tuple, Dict, Any, Callable, TYPE_CHECKING
 from datetime import datetime
+
+if TYPE_CHECKING:
+    import tkinter as tk
 
 # 优先使用Baidu语音识别（中文识别效果更好）
 try:
@@ -64,7 +67,7 @@ def get_time() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-class RoundedButton(tk.Canvas):
+class RoundedButton(tk.Canvas if tk is not None else object):  # type: ignore[misc]
     def __init__(self, master, text, width=120, height=40, corner_radius=10, 
                  bg="#2196F3", fg="white", command=None, 
                  hover_bg="#1976D2", press_bg="#0D47A1"):
@@ -169,7 +172,7 @@ class RoundedButton(tk.Canvas):
         self._draw()
 
 
-class ArrowButton(tk.Canvas):
+class ArrowButton(tk.Canvas if tk is not None else object):  # type: ignore[misc]
     def __init__(self, master, direction="up", width=60, height=60, bg="#4CAF50", 
                  fg="white", hover_bg="#45a049", press_bg="#3d8b40", 
                  on_press=None, on_release=None, corner_radius=10):
@@ -277,7 +280,7 @@ class ArrowButton(tk.Canvas):
                 self.on_release_callback()
 
 
-class DirectionalControlWidget(tk.Canvas):
+class DirectionalControlWidget(tk.Canvas if tk is not None else object):  # type: ignore[misc]
     def __init__(self, master, width=200, height=200, bg="white", 
                  on_motor1_change=None, on_motor2_change=None):
         super().__init__(master, width=width, height=height, bg=bg, highlightthickness=0)
@@ -1138,4 +1141,3 @@ def main() -> None:
 
 if __name__ == '__main__':
     main()
-
