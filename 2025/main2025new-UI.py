@@ -55,6 +55,13 @@ TURN_COEFF = 50     # 转向速度系数（降为一半）
 # 如果硬件接线导致方向相反，只需把该值改成 1.0
 HORIZONTAL_CLOCKWISE_SIGN = 1.0
 
+# 视觉控制调参（位置模式）
+VISION_POSITION_GAIN_HORIZONTAL = 0.07
+VISION_POSITION_GAIN_VERTICAL = 0.05
+VISION_POSITION_MAX_STEP = 1.5  # 单次最大角度调节
+VISION_POSITION_MIN_STEP = 1.0  # 在死区内的最小步长（电机最小响应角度）
+VISION_POSITION_INPUT_DEADZONE = 0.3
+
 # 语音交互配置
 VOICE_SWITCH = True
 VOICE_WAKE_WORD = "你好助手"  # 更容易识别的唤醒词
@@ -1145,8 +1152,9 @@ class MotorGroup2025:
         self.m2 = RmdMotor(2, ser)  # 上下映射
         
         # 电机限位角度（度）
-        self.m1_limit = (-90, 90)  # 电机1的限位：左右90度
-        self.m2_limit = (-30, 30)  # 电机2的限位：上下30度
+        self.m0_limit = (0.0, 900.0)     # 电机0的限位：0~900度
+        self.m1_limit = (-180.0, 180.0)  # 电机1的限位：-180~+180度
+        self.m2_limit = (-20.0, 30.0)    # 电机2的限位：-20~+30度
         
         # 串口访问锁，防止UI控制和手柄控制同时访问串口
         self.serial_lock = threading.Lock()
@@ -1169,46 +1177,122 @@ class MotorGroup2025:
                 except:
                     return (0.0, 0.0, 0.0)
 
+    def _apply_limited_speed(self, motor: RmdMotor, speed: float, limit_min: float, limit_max: float, axis_name: str) -> None:
+        """
+        统一的限位 + 换向归零逻辑：
+        1. 读取当前位置，估算新位置
+        2. 如果当前位置与新位置符号相反，先快速归零
+        3. 执行限位检查，超限则直接拉回限位
+        4. 在安全范围内按给定速度运行
+        """
+        try:
+            if abs(speed) < 1e-3:
+                motor.stop()
+                return
+            
+            motor.update_state()
+            current_pos = motor.position
+            increment = speed / 60.0  # 以 60Hz 控制频率估算位置增量
+            projected_pos = current_pos + increment
+            limit_tolerance = 0.5  # 允许的误差带
+            
+            # 换向快速归零：预计位置会穿过零点
+            if (
+                current_pos != 0.0
+                and projected_pos != 0.0
+                and current_pos * projected_pos < 0.0
+            ):
+                print(
+                    f"{get_time()}-电机{motor.id}检测到穿越零点："
+                    f"{current_pos:.1f}° -> {projected_pos:.1f}°，先快速归零"
+                )
+                motor.set_position(0, max_speed=TURN_COEFF)
+                return
+
+            # 当前已经抵住上限，且仍然往正方向推 -> 保持在上限
+            if current_pos >= limit_max - limit_tolerance and speed > 0:
+                motor.set_position(limit_max, max_speed=TURN_COEFF)
+                motor.stop()
+                print(f"{get_time()}-电机{motor.id}停在上限：{current_pos:.1f}° -> {limit_max:.1f}°")
+                return
+            # 当前已经抵住下限，且仍然往负方向推 -> 保持在下限
+            if current_pos <= limit_min + limit_tolerance and speed < 0:
+                motor.set_position(limit_min, max_speed=TURN_COEFF)
+                motor.stop()
+                print(f"{get_time()}-电机{motor.id}停在下限：{current_pos:.1f}° -> {limit_min:.1f}°")
+                return
+
+            # 预计即将越过上限（且指令仍为正） -> 拉回
+            if projected_pos >= limit_max and speed > 0:
+                motor.set_position(limit_max, max_speed=TURN_COEFF)
+                motor.stop()
+                print(f"{get_time()}-电机{motor.id}触发上限限位：{current_pos:.1f}° -> {limit_max:.1f}°")
+                return
+            # 预计即将越过下限（且指令仍为负） -> 拉回
+            if projected_pos <= limit_min and speed < 0:
+                motor.set_position(limit_min, max_speed=TURN_COEFF)
+                motor.stop()
+                print(f"{get_time()}-电机{motor.id}触发下限限位：{current_pos:.1f}° -> {limit_min:.1f}°")
+                return
+            
+            # 在限制范围内，正常控制
+            motor.set_speed(speed)
+        except Exception as exc:
+            print(f"{get_time()}-轴{axis_name}控制异常：{exc}")
+    
     def move_forward(self, speed_forward: float) -> None:
         with self.serial_lock:
             try:
-                self.m0.set_speed(speed_forward)
+                self._apply_limited_speed(
+                    motor=self.m0,
+                    speed=speed_forward,
+                    limit_min=self.m0_limit[0],
+                    limit_max=self.m0_limit[1],
+                    axis_name="M0"
+                )
             except (ValueError, Exception) as exc:
                 print(f"{get_time()}-电机M0控制错误: {exc}")
 
     def map_horizontal(self, value: float) -> None:
         with self.serial_lock:
             try:
-                # 获取当前角度
-                self.m1.update_state()
-                current_angle = self.m1.position
-                # 检查限位
-                if (value > 0 and current_angle >= self.m1_limit[1]) or \
-                   (value < 0 and current_angle <= self.m1_limit[0]):
-                    # 到达限位，停止对应方向的运动
-                    self.m1.stop()
-                    return
-                # 在限位范围内，正常控制
-                self.m1.set_speed(value)
+                self._apply_limited_speed(
+                    motor=self.m1,
+                    speed=value,
+                    limit_min=self.m1_limit[0],
+                    limit_max=self.m1_limit[1],
+                    axis_name="M1"
+                )
             except (ValueError, Exception) as exc:
                 print(f"{get_time()}-电机M1控制错误: {exc}")
 
     def map_vertical(self, value: float) -> None:
         with self.serial_lock:
             try:
-                # 获取当前角度
-                self.m2.update_state()
-                current_angle = self.m2.position
-                # 检查限位
-                if (value > 0 and current_angle >= self.m2_limit[1]) or \
-                   (value < 0 and current_angle <= self.m2_limit[0]):
-                    # 到达限位，停止对应方向的运动
-                    self.m2.stop()
-                    return
-                # 在限位范围内，正常控制
-                self.m2.set_speed(value)
+                self._apply_limited_speed(
+                    motor=self.m2,
+                    speed=value,
+                    limit_min=self.m2_limit[0],
+                    limit_max=self.m2_limit[1],
+                    axis_name="M2"
+                )
             except (ValueError, Exception) as exc:
                 print(f"{get_time()}-电机M2控制错误: {exc}")
+
+    def set_motor_position(self, motor_id: int, target_angle: float, max_speed: Optional[float] = None) -> None:
+        """位置控制接口，提供串口锁保护"""
+        motor_map = {0: self.m0, 1: self.m1, 2: self.m2}
+        motor = motor_map.get(motor_id)
+        if motor is None:
+            return
+        with self.serial_lock:
+            try:
+                kwargs: Dict[str, Any] = {}
+                if max_speed is not None:
+                    kwargs["max_speed"] = max_speed
+                motor.set_position(target_angle, **kwargs)
+            except (ValueError, Exception) as exc:
+                print(f"{get_time()}-电机{motor_id:02d}位置控制错误: {exc}")
 
     def angle_return(self) -> bool:
         """电机归零，使用位置闭环控制"""
@@ -1340,6 +1424,7 @@ class VisionRobotStateMachine:
         self.manual_input_lock = threading.Lock()
         self.ui_manual_input = {'forward': 0.0, 'horizontal': 0.0, 'vertical': 0.0}
         self.controller_manual_input = {'forward': 0.0, 'horizontal': 0.0, 'vertical': 0.0}
+        self.vision_targets = {'m1': 0.0, 'm2': 0.0}
 
         self.state_thread = threading.Thread(target=self._state_loop, name="robot_state_loop")
 
@@ -1408,6 +1493,7 @@ class VisionRobotStateMachine:
     def on_enter_VisionControl(self) -> None:
         # 初始灵敏度设为0.5（用于快速接近）
         self.sensitivity_multiplier = 0.5
+        self._sync_vision_targets()
         self._log_prompt(
             f"{get_time()}-状态切换：视觉自主控制（自适应灵敏度）\n"
             f"  距离远：灵敏度 0.5（快速接近）\n"
@@ -1500,58 +1586,23 @@ class VisionRobotStateMachine:
             if len(speed_pt) >= 2:
                 vertical_input = self._safe_float(speed_pt[1])
 
-        # 动态调整灵敏度：根据目标偏离距离，使用三级加速策略
-        # 距离 = sqrt(horizontal_input^2 + vertical_input^2)
-        distance_to_target = (horizontal_input ** 2 + vertical_input ** 2) ** 0.5
-        
-        # 三级加速策略：远/中/近
-        # 远距离（>60）：最大速度0.9，快速接近
-        # 中距离（10-60）：中等速度0.6，逐步减速
-        # 近距离（<10）：微调速度0.2，精准瞄准
-        FAST_THRESHOLD = 60.0    # 超过60时，使用快速接近
-        NORMAL_THRESHOLD = 20.0  # 低于10时，使用精准微调
-        
-        if distance_to_target > FAST_THRESHOLD:
-            # 远距离：快速接近模式（最大速度）
-            self.sensitivity_multiplier = 0.8
-        elif distance_to_target > NORMAL_THRESHOLD:
-            # 中距离：过渡模式，线性插值从0.9到0.2
-            ratio = (distance_to_target - NORMAL_THRESHOLD) / (FAST_THRESHOLD - NORMAL_THRESHOLD)
-            self.sensitivity_multiplier = 0.2 + ratio * 0.7  # 从0.2到0.9
-        else:
-            # 近距离：微调模式（低速精准）
-            # 当非常接近时（<3），使用极低速度确保停稳
-            if distance_to_target < 3.0:
-                self.sensitivity_multiplier = 0.15
-            else:
-                self.sensitivity_multiplier = 0.2
+        try:
+            _, current_m1, current_m2 = self.motors.get_angles()
+        except Exception as exc:
+            print(f"{get_time()}-获取角度失败：{exc}")
+            current_m1 = current_m2 = 0.0
 
-        # x > 0 (原"右侧") -> 顺时针，因此做一次符号映射
-        # 在视觉模式时应用灵敏度降低
-        # 注意：这里直接应用灵敏度到输入值，而不是后面的电机速度
-        horizontal_speed = horizontal_input * HORIZONTAL_CLOCKWISE_SIGN * self.sensitivity_multiplier
-        vertical_speed = vertical_input * self.sensitivity_multiplier
-        
-        # 死区处理：确保极小的值也能被发送（不要被夹死）
-        # 如果计算出的速度很小但不为0，强制设为最小有效值
-        MIN_SPEED = 5.0
-        if 0 < abs(horizontal_speed) < MIN_SPEED:
-            horizontal_speed = MIN_SPEED if horizontal_speed > 0 else -MIN_SPEED
-        if 0 < abs(vertical_speed) < MIN_SPEED:
-            vertical_speed = MIN_SPEED if vertical_speed > 0 else -MIN_SPEED
-        
-        # 钳位（限制最大值）
-        horizontal_speed = self._clamp(horizontal_speed, TURN_COEFF)
-        vertical_speed = self._clamp(vertical_speed, TURN_COEFF)
-
-        # 暂时不控制前进后退
-        # self.motors.move_forward(forward_adjusted)
-        self.motors.map_horizontal(horizontal_speed)
-        self.motors.map_vertical(vertical_speed)
-        self.motors.m2.previous_command['value'] = None
+        pos_info = self._vision_position_mode(
+            horizontal_input * HORIZONTAL_CLOCKWISE_SIGN,
+            vertical_input,
+            current_m1,
+            current_m2
+        )
 
         print(
-            f"\r视觉控制 距离={distance_to_target:.1f} 灵敏度={self.sensitivity_multiplier:.2f} HX={horizontal_speed:.1f} HY={vertical_speed:.1f}",
+            f"\r视觉控制[position] HX_in={horizontal_input:.2f} HY_in={vertical_input:.2f} "
+            f"M1→{pos_info.get('m1_target', current_m1):.1f}° "
+            f"M2→{pos_info.get('m2_target', current_m2):.1f}°",
             end=""
         )
 
@@ -1642,6 +1693,40 @@ class VisionRobotStateMachine:
     @staticmethod
     def _clamp(value: float, limit: float) -> float:
         return max(min(value, limit), -limit)
+
+    @staticmethod
+    def _clamp_angle(value: float, limit_pair: Tuple[float, float]) -> float:
+        return max(min(value, limit_pair[1]), limit_pair[0])
+
+    def _sync_vision_targets(self, m1: Optional[float] = None, m2: Optional[float] = None) -> None:
+        """确保视觉位置控制的目标角度与当前角度同步，避免突然跳变"""
+        if m1 is None or m2 is None:
+            try:
+                _, m1, m2 = self.motors.get_angles()
+            except Exception:
+                m1 = self.vision_targets.get('m1', 0.0)
+                m2 = self.vision_targets.get('m2', 0.0)
+        if m1 is None:
+            m1 = 0.0
+        if m2 is None:
+            m2 = 0.0
+        self.vision_targets['m1'] = float(m1)
+        self.vision_targets['m2'] = float(m2)
+
+    @staticmethod
+    def _vision_position_speed(magnitude: float) -> float:
+        """根据输入强度返回合适的最大速度"""
+        if magnitude > 15:
+            return TURN_COEFF
+        if magnitude > 6:
+            return TURN_COEFF * 0.7
+        return TURN_COEFF * 0.4
+
+    @staticmethod
+    def _sign(value: float) -> float:
+        if value >= 0:
+            return 1.0
+        return -1.0
 
     @staticmethod
     def _safe_float(value) -> float:
@@ -1785,6 +1870,53 @@ class VisionRobotStateMachine:
             if self.voice_window:
                 self.voice_window.push_log(error_msg)
 
+    def _vision_position_mode(self, horizontal_input: float, vertical_input: float, current_m1: float, current_m2: float) -> Dict[str, float]:
+        """视觉模式：根据输入直接计算目标角度并触发位置控制"""
+        self._sync_vision_targets(current_m1, current_m2)
+        info: Dict[str, float] = {}
+        moved = False
+        delta_h = self._vision_position_delta(horizontal_input, VISION_POSITION_GAIN_HORIZONTAL)
+        if delta_h != 0.0:
+            target = self._clamp_angle(self.vision_targets['m1'] + delta_h, self.motors.m1_limit)
+            if abs(target - self.vision_targets['m1']) >= 0.2:
+                self.vision_targets['m1'] = target
+                max_speed = self._vision_position_speed(abs(horizontal_input))
+                self.motors.set_motor_position(1, target, max_speed=max_speed)
+                info["m1_target"] = target
+                moved = True
+        else:
+            self.motors.m1.stop()
+
+        delta_v = self._vision_position_delta(vertical_input, VISION_POSITION_GAIN_VERTICAL)
+        if delta_v != 0.0:
+            target = self._clamp_angle(self.vision_targets['m2'] + delta_v, self.motors.m2_limit)
+            if abs(target - self.vision_targets['m2']) >= 0.2:
+                self.vision_targets['m2'] = target
+                max_speed = self._vision_position_speed(abs(vertical_input))
+                self.motors.set_motor_position(2, target, max_speed=max_speed)
+                info["m2_target"] = target
+                moved = True
+        else:
+            self.motors.m2.stop()
+
+        if not moved:
+            self.motors.m1.stop()
+            self.motors.m2.stop()
+        return info
+
+    def _vision_position_delta(self, input_value: float, gain: float) -> float:
+        magnitude = abs(input_value)
+        if magnitude < 1e-3:
+            return 0.0
+        if magnitude <= VISION_POSITION_INPUT_DEADZONE:
+            # 死区内仍然保持最小步长，确保持续逼近
+            delta = VISION_POSITION_MIN_STEP * (1 if input_value > 0 else -1)
+        else:
+            delta = gain * input_value
+            if abs(delta) < VISION_POSITION_MIN_STEP:
+                delta = VISION_POSITION_MIN_STEP * (1 if delta > 0 else -1)
+        return self._clamp(delta, VISION_POSITION_MAX_STEP)
+
     def _clear_manual_inputs(self) -> None:
         with self.manual_input_lock:
             for entry in (self.ui_manual_input, self.controller_manual_input):
@@ -1926,3 +2058,5 @@ def main() -> None:
 
 if __name__ == '__main__':
     main()
+
+
