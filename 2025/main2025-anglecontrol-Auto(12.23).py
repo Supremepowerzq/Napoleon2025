@@ -60,8 +60,14 @@ HORIZONTAL_CLOCKWISE_SIGN = 1.0
 VISION_POSITION_GAIN_HORIZONTAL = 0.07
 VISION_POSITION_GAIN_VERTICAL = 0.05
 VISION_POSITION_MAX_STEP = 1.5  # 单次最大角度调节
-VISION_POSITION_MIN_STEP = 1.0  # 在死区内的最小步长（电机最小响应角度）
-VISION_POSITION_INPUT_DEADZONE = 0.3
+VISION_POSITION_MIN_STEP = 0.1  # 在死区内的最小步长（电机最小响应角度）
+VISION_POSITION_INPUT_DEADZONE = 0.1
+
+# 视觉模式 M2 步进与 nudge 参数（可在文件开头直接调整）
+VISION_M2_FORCE_STEP = 0.001       # 每次视觉步进的角度（度）
+VISION_STEP_SPEED = 3.0           # 步进时发送的速度值（正/负方向）
+VISION_STEP_DURATION = 0.08       # 步进速度脉冲持续时间（秒）
+VISION_FALLBACK_SPEED = 2.0       # fallback 用的速度（较小的短脉冲）
 
 # 语音交互配置
 VOICE_SWITCH = True
@@ -1712,11 +1718,56 @@ class VisionRobotStateMachine:
         
         # 灵敏度系数（在视觉模式时会降低）
         self.sensitivity_multiplier = 1.0
+        # Vision tuning: reduce sensitivity and max speed for autonomous vision control
+        # Reduce sensitivity at least 3x as requested
+        self.vision_sensitivity_multiplier = 1.0 / 3.0
+        # Scale vision max speeds (0..1). 0.5 reduces speed by half.
+        self.vision_speed_multiplier = 0.5
 
         self.manual_input_lock = threading.Lock()
         self.ui_manual_input = {'forward': 0.0, 'horizontal': 0.0, 'vertical': 0.0}
         self.controller_manual_input = {'forward': 0.0, 'horizontal': 0.0, 'vertical': 0.0}
         self.vision_targets = {'m1': 0.0, 'm2': 0.0}
+        # Filtered vision targets for smoothing in vision mode
+        self.vision_targets_filtered = {'m1': 0.0, 'm2': 0.0}
+        # Vision-mode tuning for M2 (vertical) — deadband and smoothing
+        # Increase deadband to avoid oscillation around target in vision mode
+        self.vision_m2_deadband_deg = 0.15
+        # Lower alpha for EMA so filtered target is smoother (less aggressive)
+        self.vision_m2_smooth_alpha = 0.3
+        # Vision-mode per-update step limits for M2 (override manual min/max)
+        # Use small min step to allow precise approach but avoid forcing large snaps
+        self.vision_m2_min_step = 0.1
+        self.vision_m2_max_step = 1.0
+        # Vision M2 scale relative to manual mapping — reduce sensitivity further (smaller = less movement)
+        self.vision_m2_scale = 0.004
+        # When force_send is triggered but filtered change is small, move by this forced step (degrees)
+        # Use module-level constants so they can be edited at the top of the file.
+        self.vision_m2_force_step = VISION_M2_FORCE_STEP
+        # Speed used for step nudges in vision mode
+        self.vision_step_speed = VISION_STEP_SPEED
+        # Duration for each speed nudge (seconds)
+        self.vision_step_duration = VISION_STEP_DURATION
+        # vision fallback speed (used for short nudges)
+        self.vision_fallback_speed = VISION_FALLBACK_SPEED
+        # If vision input magnitude exceeds this, force a send even if filtered change < deadband
+        self.vision_force_input_threshold = 10.0
+        # Manual position targets for position-control mode (m0/m1/m2)
+        # These store the desired absolute positions (degrees) updated each cycle by deltas
+        self.manual_targets = {'m0': 0.0, 'm1': 0.0, 'm2': 0.0}
+        # Smoothing / sensitivity tunables for manual position control
+        # m1 (horizontal) smoothing alpha for EMA filter (0..1). Lower -> smoother/slower.
+        self.m1_smooth_alpha = 0.35
+        # m1 deadband (degrees) below which we will not issue new position commands
+        self.m1_deadband_deg = 0.25
+        # m2 (vertical) sensitivity multiplier (0..1) to reduce responsiveness
+        self.m2_sensitivity_multiplier = 0.45
+        # m2 deadband (degrees) below which we will not issue new position commands (manual control)
+        self.m2_deadband_deg = 0.05
+        # minimal delta (degrees) to consider a command meaningful for any motor (keep small)
+        self.manual_min_delta_deg = 0.01
+        # filtered targets used to smooth M1 (and optionally others)
+        self.manual_targets_filtered = {'m0': 0.0, 'm1': 0.0, 'm2': 0.0}
 
         self.state_thread = threading.Thread(target=self._state_loop, name="robot_state_loop")
 
@@ -1786,6 +1837,11 @@ class VisionRobotStateMachine:
         )
         self._update_voice_state("手动控制")
         self._clear_manual_inputs()
+        # Ensure manual position targets start from current motor positions to avoid jumps
+        try:
+            self._sync_manual_targets()
+        except Exception:
+            pass
 
     def on_enter_VisionControl(self) -> None:
         # 初始灵敏度设为0.5（用于快速接近）
@@ -2028,15 +2084,43 @@ class VisionRobotStateMachine:
             m2 = 0.0
         self.vision_targets['m1'] = float(m1)
         self.vision_targets['m2'] = float(m2)
+        # initialize filtered vision targets to avoid jumps
+        self.vision_targets_filtered['m1'] = float(m1)
+        self.vision_targets_filtered['m2'] = float(m2)
 
-    @staticmethod
-    def _vision_position_speed(magnitude: float) -> float:
-        """根据输入强度返回合适的最大速度"""
+    def _sync_manual_targets(self, m0: Optional[float] = None, m1: Optional[float] = None, m2: Optional[float] = None) -> None:
+        """Ensure manual position targets start from current motor positions to avoid jumps."""
+        if m0 is None or m1 is None or m2 is None:
+            try:
+                m0, m1, m2 = self.motors.get_cached_angles()
+            except Exception:
+                m0 = self.manual_targets.get('m0', 0.0)
+                m1 = self.manual_targets.get('m1', 0.0)
+                m2 = self.manual_targets.get('m2', 0.0)
+        if m0 is None:
+            m0 = 0.0
+        if m1 is None:
+            m1 = 0.0
+        if m2 is None:
+            m2 = 0.0
+        with self.manual_input_lock:
+            self.manual_targets['m0'] = float(m0)
+            self.manual_targets['m1'] = float(m1)
+            self.manual_targets['m2'] = float(m2)
+            # Initialize filtered targets the same as raw on sync
+            self.manual_targets_filtered['m0'] = float(m0)
+            self.manual_targets_filtered['m1'] = float(m1)
+            self.manual_targets_filtered['m2'] = float(m2)
+
+    def _vision_position_speed(self, magnitude: float) -> float:
+        """根据输入强度返回合适的最大速度（可由实例属性 scale）"""
         if magnitude > 15:
-            return TURN_COEFF
-        if magnitude > 6:
-            return TURN_COEFF * 0.7
-        return TURN_COEFF * 0.4
+            base = TURN_COEFF
+        elif magnitude > 6:
+            base = TURN_COEFF * 0.7
+        else:
+            base = TURN_COEFF * 0.4
+        return base * getattr(self, "vision_speed_multiplier", 1.0)
 
     @staticmethod
     def _sign(value: float) -> float:
@@ -2245,6 +2329,7 @@ class VisionRobotStateMachine:
     def _set_ui_manual_input(self, motor_id: int, normalized_value: float) -> None:
         """将 UI 控件的输入转成速度指令（-1~1 -> 实际速度）"""
         with self.manual_input_lock:
+            # Restore UI -> speeds for M0/M1, keep M2 as per-cycle position delta
             if motor_id == 0:
                 scaled = normalized_value * FORWARD_COEFF
                 self.ui_manual_input['forward'] = scaled if abs(scaled) >= 1.0 else 0.0
@@ -2252,8 +2337,10 @@ class VisionRobotStateMachine:
                 scaled = normalized_value * TURN_COEFF
                 self.ui_manual_input['horizontal'] = scaled if abs(scaled) >= 1.0 else 0.0
             elif motor_id == 2:
-                scaled = normalized_value * TURN_COEFF
-                self.ui_manual_input['vertical'] = scaled if abs(scaled) >= 1.0 else 0.0
+                # per-cycle delta for M2 (degrees per loop)
+                per_cycle_turn = TURN_COEFF / 60.0
+                delta = normalized_value * per_cycle_turn
+                self.ui_manual_input['vertical'] = delta if abs(delta) >= 0.01 else 0.0
 
     def _update_controller_inputs(self) -> None:
         if not self.xbox:
@@ -2262,12 +2349,13 @@ class VisionRobotStateMachine:
                 self.controller_manual_input['horizontal'] = 0.0
                 self.controller_manual_input['vertical'] = 0.0
             return
-
+        # Read raw inputs
         right_trigger = self.xbox.get_trigger_value('RT')
         left_trigger = self.xbox.get_trigger_value('LT')
         right_stick_x = self.xbox.get_joystick_value('RX')
         left_stick_y = self.xbox.get_joystick_value('LY')
 
+        # Restore forward and horizontal as speed controls; vertical remains per-cycle delta for position control
         forward_speed = 0.0
         if right_trigger > 0.05:
             forward_speed = right_trigger * FORWARD_COEFF
@@ -2278,44 +2366,125 @@ class VisionRobotStateMachine:
         if abs(right_stick_x) > 0.02:
             horizontal_speed = (right_stick_x * abs(right_stick_x)) * TURN_COEFF
 
-        vertical_speed = 0.0
+        # vertical: per-cycle delta (deg per loop)
+        per_cycle_turn = TURN_COEFF / 60.0
+        vertical_delta = 0.0
         if abs(left_stick_y) > 0.02:
-            vertical_speed = (left_stick_y * abs(left_stick_y)) * TURN_COEFF * 0.5
+            vertical_delta = (left_stick_y * abs(left_stick_y)) * per_cycle_turn
 
         with self.manual_input_lock:
             self.controller_manual_input['forward'] = forward_speed
             self.controller_manual_input['horizontal'] = horizontal_speed
-            self.controller_manual_input['vertical'] = vertical_speed
+            self.controller_manual_input['vertical'] = vertical_delta
 
     def _resolve_manual_inputs(self) -> Tuple[float, float, float]:
         """融合 UI 与手柄输入（UI 优先级更高，可逐轴覆盖）"""
         with self.manual_input_lock:
-            forward = self.ui_manual_input['forward'] if abs(self.ui_manual_input['forward']) > 0.5 \
+            # Now values are position deltas per cycle (degrees per loop). UI overrides controller if larger.
+            forward = self.ui_manual_input['forward'] if abs(self.ui_manual_input['forward']) > abs(self.controller_manual_input['forward']) \
                 else self.controller_manual_input['forward']
-            horizontal = self.ui_manual_input['horizontal'] if abs(self.ui_manual_input['horizontal']) > 0.5 \
+            horizontal = self.ui_manual_input['horizontal'] if abs(self.ui_manual_input['horizontal']) > abs(self.controller_manual_input['horizontal']) \
                 else self.controller_manual_input['horizontal']
-            vertical = self.ui_manual_input['vertical'] if abs(self.ui_manual_input['vertical']) > 0.5 \
+            vertical = self.ui_manual_input['vertical'] if abs(self.ui_manual_input['vertical']) > abs(self.controller_manual_input['vertical']) \
                 else self.controller_manual_input['vertical']
         return forward, horizontal, vertical
 
     def _apply_manual_motion(self, forward_speed: float, horizontal_speed: float, vertical_speed: float) -> None:
         """统一在主线程驱动电机，避免多源并发"""
         try:
-            if abs(forward_speed) > 5.0:
-                self.motors.move_forward(forward_speed)
-            else:
-                self.motors.m0.stop()
+            # M0 and M1: use speed control (restore original behavior)
+            try:
+                if abs(forward_speed) > 5.0:
+                    self.motors.move_forward(forward_speed)
+                else:
+                    self.motors.m0.stop()
+            except Exception as exc:
+                print(f"{get_time()}-M0 speed control error: {exc}")
 
-            if abs(horizontal_speed) > 2.0:
-                self.motors.map_horizontal(horizontal_speed)
-            else:
-                self.motors.m1.stop()
+            try:
+                if abs(horizontal_speed) > 2.0:
+                    self.motors.map_horizontal(horizontal_speed)
+                else:
+                    self.motors.m1.stop()
+            except Exception as exc:
+                print(f"{get_time()}-M1 speed control error: {exc}")
 
-            if abs(vertical_speed) > 2.0:
-                self.motors.map_vertical(vertical_speed)
-                self.motors.m2.previous_command['value'] = None
-            else:
-                self.motors.m2.stop()
+            # M2: keep position control (vertical axis). vertical_speed is per-cycle delta (deg)
+            with self.manual_input_lock:
+                d2 = vertical_speed * self.m2_sensitivity_multiplier
+                # ensure manual_targets for m2 initialized
+                try:
+                    _, _, cached_m2 = self.motors.get_cached_angles()
+                except Exception:
+                    cached_m2 = self.manual_targets.get('m2', 0.0)
+                if abs(self.manual_targets.get('m2', 0.0)) < 1e-6:
+                    self.manual_targets['m2'] = cached_m2
+                    self.manual_targets_filtered['m2'] = cached_m2
+
+                new_m2 = self._clamp_angle(self.manual_targets['m2'] + d2, self.motors.m2_limit)
+                if abs(new_m2 - self.manual_targets['m2']) >= self.manual_min_delta_deg:
+                    self.manual_targets['m2'] = new_m2
+                    filtered_prev = self.manual_targets_filtered.get('m2', new_m2)
+                    # If movement beyond deadband, command motor
+                    if abs(new_m2 - filtered_prev) >= self.m2_deadband_deg:
+                        # debug: check cached position before command
+                        try:
+                            cached = self.motors.get_cached_angles()
+                            cached_m2 = cached[2]
+                        except Exception:
+                            cached_m2 = None
+                        debug_msg = (
+                            f"M2 manual control -> new:{new_m2:.3f} filtered_prev:{filtered_prev:.3f} "
+                            f"deadband:{self.m2_deadband_deg} cached_m2:{cached_m2 if cached_m2 is None else f'{cached_m2:.3f}'}"
+                        )
+                        print(f"{get_time()}-{debug_msg}")
+                        if self.voice_window:
+                            self.voice_window.push_log(debug_msg)
+                        try:
+                            self.manual_targets_filtered['m2'] = new_m2
+                            self.motors.set_motor_position(2, new_m2, max_speed=TURN_COEFF)
+                            # verify by updating state immediately
+                        except Exception as exc:
+                            print(f"{get_time()}-M2 position set error: {exc}")
+                            if self.voice_window:
+                                self.voice_window.push_log(f"M2 position set error: {exc}")
+                        # read current motor position (if possible)
+                        cur_pos = None
+                        try:
+                            self.motors.m2.update_state()
+                            cur_pos = float(self.motors.m2.position)
+                            print(f"{get_time()}-M2 manual post-set position: {cur_pos:.3f}°")
+                            if self.voice_window:
+                                self.voice_window.push_log(f"M2 manual post-set position: {cur_pos:.3f}°")
+                        except Exception as exc_up:
+                            print(f"{get_time()}-M2 manual update_state failed: {exc_up}")
+                            if self.voice_window:
+                                self.voice_window.push_log(f"M2 manual update_state failed: {exc_up}")
+                        # If position did not change, perform small speed nudge as fallback
+                        try:
+                            prev_pos = filtered_prev
+                            moved_threshold = max(self.m2_deadband_deg, 0.05)
+                            if cur_pos is None or (prev_pos is not None and abs(cur_pos - prev_pos) < moved_threshold):
+                                direction = 1.0 if (new_m2 - prev_pos) >= 0 else -1.0
+                                test_speed = getattr(self, "vision_fallback_speed", 4.0) * direction
+                                print(f"{get_time()}-M2 manual fallback: speed {test_speed:.1f} for 0.12s")
+                                if self.voice_window:
+                                    self.voice_window.push_log(f"M2 manual fallback: speed {test_speed:.1f}")
+                                try:
+                                    self.motors.map_vertical(test_speed)
+                                    time.sleep(0.12)
+                                    self.motors.map_vertical(0.0)
+                                    self.motors.m2.update_state()
+                                    pos_after = float(self.motors.m2.position)
+                                    print(f"{get_time()}-M2 manual fallback post position: {pos_after:.3f}°")
+                                    if self.voice_window:
+                                        self.voice_window.push_log(f"M2 manual fallback post position: {pos_after:.3f}°")
+                                except Exception as exc_fb:
+                                    print(f"{get_time()}-M2 manual fallback failed: {exc_fb}")
+                                    if self.voice_window:
+                                        self.voice_window.push_log(f"M2 manual fallback failed: {exc_fb}")
+                        except Exception:
+                            pass
         except (ValueError, Exception) as exc:
             error_msg = f"手动控制执行异常：{exc}"
             print(f"{get_time()}-{error_msg}")
@@ -2327,7 +2496,8 @@ class VisionRobotStateMachine:
         self._sync_vision_targets(current_m1, current_m2)
         info: Dict[str, float] = {}
         moved = False
-        delta_h = self._vision_position_delta(horizontal_input, VISION_POSITION_GAIN_HORIZONTAL)
+        # apply additional vision sensitivity multiplier (reduce responsiveness)
+        delta_h = self._vision_position_delta(horizontal_input, VISION_POSITION_GAIN_HORIZONTAL * getattr(self, "vision_sensitivity_multiplier", 1.0))
         if delta_h != 0.0:
             target = self._clamp_angle(self.vision_targets['m1'] + delta_h, self.motors.m1_limit)
             if abs(target - self.vision_targets['m1']) >= 0.2:
@@ -2339,17 +2509,56 @@ class VisionRobotStateMachine:
         else:
             self.motors.m1.stop()
 
-        delta_v = self._vision_position_delta(vertical_input, VISION_POSITION_GAIN_VERTICAL)
-        if delta_v != 0.0:
-            target = self._clamp_angle(self.vision_targets['m2'] + delta_v, self.motors.m2_limit)
-            if abs(target - self.vision_targets['m2']) >= 0.2:
-                self.vision_targets['m2'] = target
-                max_speed = self._vision_position_speed(abs(vertical_input))
-                self.motors.set_motor_position(2, target, max_speed=max_speed)
-                info["m2_target"] = target
-                moved = True
-        else:
+        # Simpler step-based M2 control for vision mode:
+        # - Cancel complex position interpolation. Instead, on each update if vertical_input outside deadzone:
+        #   - if HY > 0 -> step up by vision_step (deg)
+        #   - if HY < 0 -> step down by vision_step (deg)
+        #   - use a gentle fixed speed for the position command.
+        vision_deadzone = getattr(self, "vision_input_deadzone", 0.1)
+        if abs(vertical_input) <= vision_deadzone:
+            # inside deadzone -> stop vertical motor
             self.motors.m2.stop()
+        else:
+            step = getattr(self, "vision_m2_force_step", 0.2)
+            direction = 1.0 if vertical_input > 0 else -1.0
+            # base off the last commanded vision target if available, fallback to cached motor angle
+            try:
+                _, _, cached_m2 = self.motors.get_cached_angles()
+            except Exception:
+                cached_m2 = None
+            base_pos = self.vision_targets.get('m2', cached_m2 if cached_m2 is not None else 0.0)
+            # compute a simple stepped target (accumulate from last commanded vision target)
+            new_target = self._clamp_angle(base_pos + direction * step, self.motors.m2_limit)
+            # command at fixed slow speed (1.0 as requested)
+            # Use speed-based nudge (map_vertical) instead of position set to ensure movement.
+            nudge_speed = getattr(self, "vision_step_speed", 1.0) * (1.0 if direction >= 0 else -1.0)
+            try:
+                # send short speed command to nudge motor and then read updated position
+                self.motors.map_vertical(nudge_speed)
+                time.sleep(getattr(self, "vision_step_duration", 0.12))
+                self.motors.map_vertical(0.0)
+                # try to update motor state immediately and log actual position after nudge
+                try:
+                    self.motors.m2.update_state()
+                    pos_after = float(self.motors.m2.position)
+                    print(f"{get_time()}-M2 vision nudge post position: {pos_after:.3f}°")
+                    if self.voice_window:
+                        self.voice_window.push_log(f"M2 vision nudge post position: {pos_after:.3f}°")
+                except Exception:
+                    pos_after = None
+                # update internal vision target as the stepped position we intend
+                self.vision_targets['m2'] = new_target
+                self.vision_targets_filtered['m2'] = new_target
+                info["m2_target"] = new_target
+                moved = True
+                print(f"{get_time()}-M2 vision step (speed nudge) -> dir:{direction:+.1f} step:{step:.3f} target:{new_target:.3f} speed:{nudge_speed:.3f}")
+                if self.voice_window:
+                    self.voice_window.push_log(f"M2 vision step -> {new_target:.3f}")
+            except Exception as exc:
+                print(f"{get_time()}-M2 vision step nudge failed: {exc}")
+                if self.voice_window:
+                    self.voice_window.push_log(f"M2 vision step nudge failed: {exc}")
+                moved = False
 
         if not moved:
             self.motors.m1.stop()
