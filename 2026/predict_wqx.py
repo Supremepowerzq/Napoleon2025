@@ -24,7 +24,7 @@ from config import update_config
 ROOT = Path(__file__).resolve().parent
 
 # ★改成你真实的 Depth-Anything-V2-main 路径（使用仓库内自带版本）
-REPO_ROOT = Path(r"E:\zq\TJU\Napoleon2025\2026\Depth-Anything-V2-main")
+REPO_ROOT = Path(r"E:\zq\TJU\Depth-Anything-V2-main")
 METRIC_ROOT = REPO_ROOT / "metric_depth"
 sys.path.insert(0, str(REPO_ROOT))  # 添加主目录到路径
 sys.path.insert(0, str(METRIC_ROOT))  # 添加metric_depth目录到路径（优先）
@@ -32,7 +32,7 @@ sys.path.insert(0, str(METRIC_ROOT))  # 添加metric_depth目录到路径（优�
 from metric_depth.depth_anything_v2.dpt import DepthAnythingV2
 
 # ★改成你真实的权重路径（pth 文件在哪里就写哪里）
-LOAD_FROM = Path(r"E:\zq\TJU\checkpoints\depth_anything_v2_metric_hypersim_vitl.pth")
+LOAD_FROM = Path(r"E:\zq\TJU\Depth-Anything-V2-main\checkpoints\depth_anything_v2_metric_hypersim_vitl.pth")
 
 # =========================
 # 1) 参数区（你主要改这里）

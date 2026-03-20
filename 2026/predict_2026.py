@@ -118,7 +118,7 @@ class UnetPackage:
 
             # 加载模型
             self.depth_model = DepthAnythingV2(**model_configs[self.depth_encoder])
-            weight_path = os.path.join('E:/zq/TJU/Napoleon2025/2026/Depth-Anything-V2-main/checkpoints', f'depth_anything_v2_{self.depth_encoder}.pth')
+            weight_path = os.path.join('E:/zq/TJU/Depth-Anything-V2-main/checkpoints', f'depth_anything_v2_{self.depth_encoder}.pth')
 
             if not os.path.exists(weight_path):
                 print(f"错误：深度权重文件不存在 → {weight_path}")
