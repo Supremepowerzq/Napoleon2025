@@ -15,7 +15,7 @@ from config import *
 from ToolKits.ToolBox import get_time
 # from RobotUI import RobotUI
 import ttkbootstrap as ttk
-from Interface.CameraInterface import RealSenseL515
+# from Interface.CameraInterface import RealSenseL515
 
 from predict import UnetPackage
 from time import sleep

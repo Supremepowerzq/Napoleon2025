@@ -28,13 +28,14 @@ class Unet(object):
         #-------------------------------------------------------------------#
         # "model_path"    : 'model_data/unet_vgg_voc.pth',#原始权值
         # "model_path"    : 'DLpredict\logs\(real)ep100-loss0.040-val_loss0.059.pth',#医生实际视频用
-        "model_path"    : r'E:/zq/Napoleon6.21/logs/(biom)best_epoch_weights.pth',#实验室肾模型用
+        # "model_path"    : r'E:/zq/Napoleon6.21/logs/(biom)best_epoch_weights.pth',#实验室肾模型用
+        "model_path"    : r'E:/zq/TJU/Napoleon6.21/logs/(Slime)best_epoch_weights.pth',#实验室slime模型用
         
         # "model_path"    : 'DLpredict\logs\(trc)best_epoch_weights.pth',#trc修改后pth
         #--------------------------------#
         #   所需要区分的类的个数+1
         #--------------------------------#
-        "num_classes"   : 3,
+        "num_classes"   : 2,
         #--------------------------------#
         #   所使用的的主干网络：vgg、resnet50   
         #--------------------------------#

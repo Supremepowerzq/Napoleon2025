@@ -441,7 +441,7 @@ class RobotStateMachine:
         # global speed_pt
         # 获取单个配置值  
     speed_forward1 = get_config('speed_pf')  
-    speed_turn1 = get_config('speed_pt') 
+    # speed_turn1 = get_config('speed_pt') 
     # print("获取config中的值,将之赋给电机")
     # print(speed_forward1)  
     # print(speed_turn1)

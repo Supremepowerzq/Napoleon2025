@@ -23,7 +23,7 @@ from config import get_config
 class UnetPackage:
     def __init__(self, model_path=None, 
         mode='video', count=False, name_classes=None, 
-        video_path=1, video_save_path="", 
+        video_path=0, video_save_path="", 
         video_fps=30, test_interval=1000, 
         fps_image_path="img/street.jpg", 
         dir_origin_path="img/", 
@@ -823,7 +823,9 @@ if __name__ == "__main__":
         #  video_path=r'assets\test2-compressed.mp4',
         #  video_save_path='assets\result-test2-compressed.mp4',
         #  video_save_path='assets\result6.28-demo6.18-480.mp4',  # 设置视频保存路径,空为不保存
-         video_fps=30,  # 设置视频帧率
+        #  video_path=r'C:\Users\lenovo\Desktop\zq\1.8silaimu_demo2.mp4',
+        #  video_save_path=r'C:\Users\lenovo\Desktop\zq\1.8silaimu_demo2_result.mp4',
+        #  video_fps=30,  # 设置视频帧率
         )
      # 调用视频处理方法
     unet_package.video()

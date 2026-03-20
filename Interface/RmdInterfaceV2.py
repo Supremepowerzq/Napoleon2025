@@ -6,12 +6,12 @@ sys.path.append(parent_path)
 import time
 import serial
 from typing import List
-import tqdm
-import pyinstrument
+# import tqdm  # 已移除，避免依赖问题
+# import pyinstrument  # 已移除，避免依赖问题
 import threading
 import queue
 from ToolKits.Timer import maintain_target_frequency, busy_maintain_target_frequency
-from matplotlib import pyplot as plt
+# from matplotlib import pyplot as plt  # 已移除，避免版本冲突
 import numpy as np
 from config import *
 from ToolKits.ToolBox import get_time
@@ -236,22 +236,29 @@ class RmdMotor:
         返回:
         List[str]: 电机的响应，以十六进制字符串列表的形式返回。
         """
+        # Flush and send
         self.serial.flushInput()
         self.serial.flushOutput()
+        # Debug: print outgoing buffer
+        # (已移除调试打印)
         self.serial.write(self.__calculate_crc(send_buffer))
         self.serial.flush()
         receive_buffer = []
         time_start = time.perf_counter()
+        # Increase per-call timeout to allow motor processing (was 0.1s)
+        per_call_timeout = 0.3
         while len(receive_buffer) < buffer_size:
-            if time.perf_counter() - time_start > 0.1:
+            if time.perf_counter() - time_start > per_call_timeout:
                 if retries > 0:
-                    print(f"motor {self.id} response timeout, retries left: {retries}")
-                    return self.write(send_buffer, buffer_size, retries-1)  # 递归调用，重试次数减1
+                    print(f"{get_time()}-motor {self.id} response timeout, retries left: {retries}", flush=True)
+                    return self.write(send_buffer, buffer_size, retries-1)  # recursive retry
                 else:
                     raise TimeoutError("Motor response timeout, no retries left.")
             response = self.serial.read().hex().upper()
             if response:
                 receive_buffer.append(response)
+        # Debug: print received buffer
+        # (已移除调试打印)
         return receive_buffer        
     
     def __decode_received_buffer(self, receive_buffer: List[str], instruction_type: str) -> None:
