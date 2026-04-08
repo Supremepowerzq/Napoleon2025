@@ -56,6 +56,7 @@ class UnetPackage:
         roi_x=803, roi_y=146, roi_side=788,
         undistort_maps_path=r"E:\p3\wqx\undistort_maps_roi788.npz",
         depth_weight_path=r"E:\zq\TJU\Depth-Anything-V2-main\checkpoints\depth_anything_v2_metric_hypersim_vitl.pth",
+        # depth_weight_path=r"E:\zq\TJU\Depth-Anything-V2-main\checkpoints\kidney_dav2_best.pth",
         # 深度标定参数
         depth_scale=0.01,
         depth_bias=0.0,
@@ -66,7 +67,8 @@ class UnetPackage:
         inlier_min=0.25,
         # 推进控制参数
         depth_advance_mm=20.0,
-        depth_stop_mm=15.0,
+        # depth_stop_mm=15.0,
+        depth_stop_mm=12.0,
        ):
 
         self.mode = mode

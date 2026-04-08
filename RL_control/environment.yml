@@ -1,0 +1,37 @@
+# Deep Reinforcement Learning Control System for RMD Motors
+# 基于 PyBullet 仿真 + 真实硬件迁移的深度强化学习控制系统
+
+name: rmd_rl_control
+channels:
+  - pytorch
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - pip:
+    # PyTorch
+    - torch>=2.0.0
+    - torchvision>=0.15.0
+    # RL 训练框架 (stable-baselines3 已包含 PPO/SAC/TD3/DDPG)
+    - stable-baselines3>=2.0.0
+    - sb3-contrib>=2.0.0
+    # 仿真环境
+    - pybullet>=3.2.5
+    - gymnasium>=0.29.0
+    # 视觉处理
+    - opencv-python>=4.8.0
+    - pyrealsense2>=2.54.0
+    - pillow>=10.0.0
+    # 深度学习工具
+    - numpy>=1.24.0
+    - scipy>=1.11.0
+    - matplotlib>=3.7.0
+    - tensorboard>=2.14.0
+    - wandb>=0.15.0
+    # 数据处理
+    - pandas>=2.0.0
+    - pyyaml>=6.0
+    - tqdm>=4.65.0
+    # 其他工具
+    - pyserial>=3.5
