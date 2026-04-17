@@ -116,13 +116,13 @@ def video_processing() -> None:
     """视觉线程：持续运行Unet视频推理"""
     # 延迟导入 UnetPackage，避免模块导入时触发 torchvision/torch 的复杂依赖
     try:
-        from predict_2026_wqx import UnetPackage  # type: ignore[import]
+        from predict_2026_wqx_3dshow import UnetPackage  # type: ignore[import]
     except Exception as exc:
         print(f"{get_time()}-视频模块导入失败，跳过视觉处理：{exc}")
         return
     m_unet_package = UnetPackage(
         mode='video',
-        video_path=1,
+        video_path=0,  # 使用索引0的相机（默认相机）
         video_save_path='',
         video_fps=30,
         # 启用深度推理功能
@@ -2151,8 +2151,9 @@ class VisionRobotStateMachine:
         except Exception as exc:
             self.voice_window = None
             print(f"语音窗口初始化失败：{exc}")
-        if sr is None:
-            print("未检测到 speech_recognition，语音控制不可用")
+        if sr is None and not baidu_speech:
+            print("未检测到语音识别库，语音控制不可用")
+            print("提示：可以使用百度API（需配置BAIDU_APP_ID等）或安装 speech_recognition")
             return
         try:
             self.voice_control = VoiceCommandCenter(self.voice_window)

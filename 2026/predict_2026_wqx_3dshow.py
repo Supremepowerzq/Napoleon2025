@@ -830,12 +830,23 @@ class UnetPackage:
                 circular_depth = depth_vis
 
             # ============================================================
-            # Step 13: 拼接三窗口：Original | UNet | Depth
+            # Step 13: 生成3D点云视角
+            # ============================================================
+            target_h, target_w = circular_original.shape[:2]
+            point_cloud_view = self.render_isometric_point_cloud(
+                depth_m, depth_vis, contours2, max_num, cx, cy,
+                target_size=(target_h, target_w),
+                downsample=5,
+                z_exaggeration=1.5,      # Z轴拉伸系数
+                rotation_deg=0,        # XY平面绕Z轴旋转（0=无旋转）
+                tilt_deg=-30,          # 俯仰角度（上下倾角）
+                azimuth_deg=-30         # 方位角度（左右旋转）
+            )
+
+            # ============================================================
+            # Step 14: 拼接四窗口：Original | UNet | Depth | 3D Point Cloud
             # ============================================================
             try:
-                # 确保所有图像尺寸一致
-                target_h, target_w = circular_original.shape[:2]
-
                 # 调整 circular_unet 和 circular_depth 的尺寸以匹配 circular_original
                 if circular_unet.shape[:2] != (target_h, target_w):
                     circular_unet = cv2.resize(circular_unet, (target_w, target_h))
@@ -843,22 +854,24 @@ class UnetPackage:
                 if circular_depth.shape[:2] != (target_h, target_w):
                     circular_depth = cv2.resize(circular_depth, (target_w, target_h))
 
-                combined_width = target_w * 3
+                # 3D点云窗口已在render_isometric_point_cloud中调整为target尺寸
+
+                combined_width = target_w * 4
                 combined_height = target_h
                 combined_image = np.zeros((combined_height, combined_width, 3), dtype=np.uint8)
 
                 combined_image[:, 0:target_w] = circular_original
                 combined_image[:, target_w:2*target_w] = circular_unet
                 combined_image[:, 2*target_w:3*target_w] = circular_depth
+                combined_image[:, 3*target_w:4*target_w] = point_cloud_view
 
                 # 缩小拼接窗口以便显示
-                # display_scale = 0.5
-                display_scale = 1.0
+                display_scale = 0.8
                 display_w = int(combined_width * display_scale)
                 display_h = int(combined_height * display_scale)
                 combined_image_display = cv2.resize(combined_image, (display_w, display_h))
 
-                cv2.imshow("Combined View: Original | UNet | Depth", combined_image_display)
+                cv2.imshow("Combined View: Original | UNet | Depth | 3D PointCloud", combined_image_display)
 
             except Exception as e:
                 print(f"Combine window error: {e}")
@@ -886,6 +899,216 @@ class UnetPackage:
         """为指定尺寸创建圆形掩码"""
         Y, X = np.ogrid[:h, :w]
         return (((X - center_x) ** 2 + (Y - center_y) ** 2) <= radius ** 2).astype(np.uint8)
+
+    def render_isometric_point_cloud(self, depth_m, depth_color, contours2, max_num, cx, cy,
+                                     target_size=None, downsample=6,
+                                     z_exaggeration=1.5, rotation_deg=0, tilt_deg=30,
+                                     azimuth_deg=0):
+        """
+        使用可调视角渲染深度图的3D点云
+
+        视角参数说明：
+        - z_exaggeration: Z轴拉伸系数，默认1.5
+        - rotation_deg: XY平面绕Z轴旋转，默认0°
+        - tilt_deg: 俯仰角度（上下倾角），默认30°
+          - 0°: 正对着XY平面（俯视图）
+          - 30°: 标准正等轴测图视角
+        - azimuth_deg: 方位角度（左右旋转），默认0°
+          - 与tilt_deg垂直，控制水平方向的倾斜
+          - 0°: 无方位倾斜
+          - 正值: 向右偏移
+          - 负值: 向左偏移
+        """
+        if depth_m is None:
+            h = depth_color.shape[0] if depth_color is not None else 788
+            w = depth_color.shape[1] if depth_color is not None else 788
+            target_h, target_w = target_size if target_size else (h, w)
+            view = np.zeros((target_h, target_w, 3), dtype=np.uint8)
+            cv2.circle(view, (target_w//2, target_h//2), target_h//2 - 2, (100, 100, 100), 1, cv2.LINE_AA)
+            cv2.putText(view, '3D PointCloud', (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
+            return view
+
+        h, w = depth_m.shape
+        target_h, target_w = target_size if target_size else (h, w)
+
+        # 投影参数
+        cos_30 = np.sqrt(3) / 2
+        sin_30 = 0.5
+
+        # 角度转弧度
+        rot_rad = np.deg2rad(rotation_deg)
+        tilt_rad = np.deg2rad(tilt_deg)
+        azimuth_rad = np.deg2rad(azimuth_deg)
+        cos_rot, sin_rot = np.cos(rot_rad), np.sin(rot_rad)
+        cos_tilt, sin_tilt = np.cos(tilt_rad), np.sin(tilt_rad)
+        cos_azimuth, sin_azimuth = np.cos(azimuth_rad), np.sin(azimuth_rad)
+
+        # 创建圆形掩码
+        circle_mask = self.make_circle_mask_for_size(w, h, w//2, h//2, h//2)
+
+        # 深度归一化
+        depth_normalized = depth_m.copy()
+        dmin, dmax = depth_normalized.min(), depth_normalized.max()
+        if dmax - dmin > 1e-6:
+            depth_normalized = (depth_normalized - dmin) / (dmax - dmin)
+        else:
+            depth_normalized = np.zeros_like(depth_normalized)
+
+        # 第一步：计算所有投影点的范围
+        projected_points = []
+        for j in range(0, h, downsample):
+            for i in range(0, w, downsample):
+                if circle_mask[j, i] > 0:
+                    # 像素坐标 (i, j) -> 归一化世界坐标 [-1, 1]
+                    # i是列(水平X)，j是行(垂直Y，图像中向下为正)
+                    x_norm = (i - w/2) / (w/2)
+                    y_norm = (j - h/2) / (h/2)
+
+                    # 镜像修正：图像中Y向下，但3D空间中Y应向"上"（或向内）
+                    # 去掉这个负号会导致上下镜像
+                    y_norm = -y_norm  # 关键修正：翻转Y轴
+
+                    z_val = depth_normalized[j, i] * z_exaggeration
+
+                    # 应用XY平面旋转（绕Z轴）
+                    x_rot = x_norm * cos_rot - y_norm * sin_rot
+                    y_rot = x_norm * sin_rot + y_norm * cos_rot
+
+                    # 应用方位角（左右旋转）：绕Y轴旋转X和Z
+                    x_az = x_rot * cos_azimuth + z_val * sin_azimuth
+                    z_az = -x_rot * sin_azimuth + z_val * cos_azimuth
+
+                    # 应用俯仰角（上下倾角）：绕X轴旋转
+                    iso_x = x_az
+                    iso_y = y_rot * cos_tilt - z_az * sin_tilt
+
+                    projected_points.append((iso_x, iso_y, i, j))
+
+        # 初始化输出图像（黑色背景）
+        view = np.zeros((target_h, target_w, 3), dtype=np.uint8)
+
+        if not projected_points:
+            cv2.circle(view, (target_w//2, target_h//2), target_h//2 - 2, (100, 100, 100), 1, cv2.LINE_AA)
+            cv2.putText(view, '3D PointCloud', (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
+            return view
+
+        # 计算投影范围
+        iso_x_vals = [p[0] for p in projected_points]
+        iso_y_vals = [p[1] for p in projected_points]
+        min_iso_x, max_iso_x = min(iso_x_vals), max(iso_x_vals)
+        min_iso_y, max_iso_y = min(iso_y_vals), max(iso_y_vals)
+
+        # 计算缩放因子
+        margin = 0.1
+        range_x = max_iso_x - min_iso_x
+        range_y = max_iso_y - min_iso_y
+        display_range = 1.0 - 2 * margin
+        scale_x = display_range / (range_x + 1e-6)
+        scale_y = display_range / (range_y + 1e-6)
+        scale = min(scale_x, scale_y)
+        offset_x = -min_iso_x * scale + margin
+        offset_y = -min_iso_y * scale + margin + 0.05
+
+        # 第二步：使用NumPy向量化绘制所有投影点（高效方式）
+        pts_x = np.array([p[0] for p in projected_points])
+        pts_y = np.array([p[1] for p in projected_points])
+        pts_px = np.array([p[2] for p in projected_points], dtype=np.int32)
+        pts_py = np.array([p[3] for p in projected_points], dtype=np.int32)
+
+        # 计算屏幕坐标
+        screen_x = ((pts_x * scale + offset_x) * target_w).astype(np.int32)
+        screen_y = target_h - ((pts_y * scale + offset_y) * target_h).astype(np.int32)
+
+        # 创建有效点掩码
+        valid_mask = (screen_x >= 0) & (screen_x < target_w) & (screen_y >= 0) & (screen_y < target_h)
+
+        # 批量绘制有效点
+        valid_x = screen_x[valid_mask]
+        valid_y = screen_y[valid_mask]
+        valid_px = pts_px[valid_mask]
+        valid_py = pts_py[valid_mask]
+
+        if len(valid_x) > 0:
+            # 获取所有颜色
+            colors = depth_color[valid_py, valid_px].astype(np.int32)
+
+            # 使用OpenCV的putText批量绘制（绘制小矩形代替点）
+            for k in range(len(valid_x)):
+                sx, sy, color = int(valid_x[k]), int(valid_y[k]), colors[k]
+                # 绘制单个像素点
+                view[sy, sx] = np.clip(color, 0, 255).astype(np.uint8)
+                # 绘制2x2区域使点更明显
+                if sx + 1 < target_w and sy + 1 < target_h:
+                    view[sy+1, sx] = np.clip(color, 0, 255).astype(np.uint8)
+                    view[sy, sx+1] = np.clip(color, 0, 255).astype(np.uint8)
+
+        # 第三步：绘制结石轮廓（应用相同的视角变换）
+        if len(contours2) > 0 and max_num >= 0:
+            try:
+                contour = contours2[max_num]
+                contour_points_iso = []
+                for point in contour:
+                    px, py = point[0]
+                    if 0 <= px < w and 0 <= py < h:
+                        x_norm = (px - w/2) / (w/2)
+                        y_norm = (py - h/2) / (h/2)
+                        y_norm = -y_norm  # Y轴镜像修正
+
+                        z_val = depth_normalized[py, px] * z_exaggeration
+
+                        # 应用XY平面旋转（绕Z轴）
+                        x_rot = x_norm * cos_rot - y_norm * sin_rot
+                        y_rot = x_norm * sin_rot + y_norm * cos_rot
+
+                        # 应用方位角（左右旋转）：绕Y轴旋转X和Z
+                        x_az = x_rot * cos_azimuth + z_val * sin_azimuth
+                        z_az = -x_rot * sin_azimuth + z_val * cos_azimuth
+
+                        # 应用俯仰角（上下倾角）
+                        iso_x = x_az
+                        iso_y = y_rot * cos_tilt - z_az * sin_tilt
+
+                        sx = int((iso_x * scale + offset_x) * target_w)
+                        sy = target_h - int((iso_y * scale + offset_y) * target_h)
+                        if 0 <= sx < target_w and 0 <= sy < target_h:
+                            contour_points_iso.append([sx, sy])
+
+                if len(contour_points_iso) > 2:
+                    contour_points_iso = np.array(contour_points_iso, dtype=np.int32)
+                    cv2.polylines(view, [contour_points_iso], False, (0, 255, 255), 3, cv2.LINE_AA)
+            except Exception:
+                pass
+
+        # 第四步：绘制坐标系（原点对齐到左下角区域）
+        # 目标布局：Y轴向上，X轴右上，Z轴右下
+        origin_x, origin_y = 50, target_h - 40
+        axis_len = 50
+        cos_30 = np.sqrt(3) / 2
+        sin_30 = 0.5
+
+        # Y轴：向上（屏幕上方）
+        cv2.line(view, (origin_x, origin_y), (origin_x, origin_y - axis_len), (0, 255, 0), 2, cv2.LINE_AA)
+        cv2.putText(view, 'Y', (origin_x - 8, origin_y - axis_len - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1, cv2.LINE_AA)
+
+        # X轴：右上方
+        x_end_x = origin_x + int(axis_len * cos_30)
+        x_end_y = origin_y - int(axis_len * sin_30)
+        cv2.line(view, (origin_x, origin_y), (x_end_x, x_end_y), (255, 0, 0), 2, cv2.LINE_AA)
+        cv2.putText(view, 'X', (x_end_x + 3, x_end_y + 8), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 0), 1, cv2.LINE_AA)
+
+        # Z轴：右下方
+        z_end_x = origin_x + int(axis_len * cos_30)
+        z_end_y = origin_y + int(axis_len * sin_30)
+        cv2.line(view, (origin_x, origin_y), (z_end_x, z_end_y), (0, 255, 255), 2, cv2.LINE_AA)
+        cv2.putText(view, 'Z', (z_end_x + 3, z_end_y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1, cv2.LINE_AA)
+
+        # 标题
+        cv2.putText(view, '3D PointCloud', (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
+
+        # 绘制圆形边框
+        cv2.circle(view, (target_w//2, target_h//2), target_h//2 - 2, (100, 100, 100), 1, cv2.LINE_AA)
+
+        return view
 
     def fps(self):
         """测试UNet模型推理FPS"""
