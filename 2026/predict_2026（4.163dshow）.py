@@ -21,6 +21,14 @@ from ToolKits.ToolBox import get_time
 from config import update_config
 from config import get_config
 
+# Open3D 点云可视化
+try:
+    import open3d as o3d
+    OPEN3D_AVAILABLE = True
+except ImportError:
+    print("警告：无法导入 Open3D，将禁用3D点云功能")
+    OPEN3D_AVAILABLE = False
+
 # import cProfile
 
 # ---------------- 深度推理相关导入 ----------------
@@ -86,6 +94,13 @@ class UnetPackage:
         if self.enable_depth:
             self._init_depth_model()
 
+        # Open3D 点云可视化初始化
+        self.pcd_window = None
+        self.pcd_vis = None
+        self.pcd_init_done = False
+        if self.enable_depth and OPEN3D_AVAILABLE:
+            self._init_pointcloud_visualizer()
+
         # 初始化UNet模型
         if self.mode != "predict_onnx":
             self.unet = Unet()
@@ -137,14 +152,119 @@ class UnetPackage:
             print(f"深度模型初始化失败：{e}")
             self.enable_depth = False
 
+    def _init_pointcloud_visualizer(self):
+        """初始化Open3D 3D表面可视化窗口 - 正等轴测图视角"""
+        if not OPEN3D_AVAILABLE:
+            return
+
+        try:
+            # 创建可视化窗口 - 增大窗口尺寸
+            self.pcd_window = o3d.visualization.Visualizer()
+            self.pcd_window.create_window(window_name='3D Isometric Surface', width=640, height=640)
+
+            # 设置渲染选项
+            render_option = self.pcd_window.get_render_option()
+            render_option.point_size = 1.5
+            render_option.background_color = np.array([0.05, 0.05, 0.05])
+
+            # 设置俯视视角 - XY平面水平朝上，Z轴向上拉伸
+            ctr = self.pcd_window.get_view_control()
+            ctr.set_front([0.707, 0, 0.707])  # 蓝轴绕绿轴旋转45°的视角
+            ctr.set_lookat([0, 0, 0])        # 观察中心在原点
+            ctr.set_up([0, 1, 0])            # Y轴向上（屏幕上的上方向）
+            ctr.set_zoom(0.75)               # 缩小视图
+
+            # 使用PointCloud存储3D表面点
+            self.surface_pcd = o3d.geometry.PointCloud()
+            self.pcd_window.add_geometry(self.surface_pcd)
+
+            # 添加坐标轴 - 原点设置在(10, 10, 0)，左下角对齐，尺寸增大
+            mesh_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=60.0, origin=[0, 0, 0])
+            self.pcd_window.add_geometry(mesh_frame)
+
+            self.pcd_init_done = True
+            print("3D表面可视化窗口初始化成功")
+
+        except Exception as e:
+            print(f"3D表面可视化初始化失败：{e}")
+            self.pcd_init_done = False
+
+    def depth_to_3d_surface(self, depth_map, circular_mask, scale_factor=10.0):
+        """
+        将深度图转换为3D表面点云（XY平面水平放置）
+        :param depth_map: 深度图（0-255 uint8）
+        :param circular_mask: 圆形掩码
+        :param scale_factor: 深度缩放因子，Z轴拉伸程度
+        :return: open3d PointCloud对象
+        """
+        if not OPEN3D_AVAILABLE:
+            return None
+
+        try:
+            h, w = depth_map.shape[:2]
+
+            # 获取有效像素坐标
+            ys, xs = np.where(circular_mask > 0)
+            if len(ys) < 10:
+                return None
+
+            # 归一化深度值
+            depth_values = depth_map.astype(np.float32) / 255.0
+
+            # 下采样：每隔n个像素取一个点
+            step = 3
+
+            # 坐标偏移：左下角对齐原点(10, 10)
+            offset_x = 0
+            offset_y = 0
+
+            # XY缩放：根据图像尺寸调整，让整个深度图完整显示
+            # 图像尺寸约 460x230，缩放到约 100x50 的范围
+            xy_scale = 0.15
+
+            # 创建顶点数组
+            vertices = []
+            colors = []
+
+            for y in range(0, h, step):
+                for x in range(0, w, step):
+                    if circular_mask[y, x] > 0:
+                        # 3D坐标：X向右、Y向上（屏幕坐标转换）、Z深度拉伸
+                        vx = offset_x + x * xy_scale
+                        vy = offset_y + (h - 1 - y) * xy_scale  # Y反转，左下角为原点
+                        vz = depth_values[y, x] * scale_factor
+
+                        vertices.append([vx, vy, vz])
+
+                        # 颜色（Spectral_r映射）
+                        if hasattr(self, 'depth_cmap'):
+                            color = self.depth_cmap(depth_values[y, x])[:3]
+                        else:
+                            color = [depth_values[y, x], depth_values[y, x], depth_values[y, x]]
+                        colors.append(color)
+
+            vertices = np.array(vertices, dtype=np.float64)
+            colors = np.array(colors, dtype=np.float64)
+
+            # 创建Open3D点云
+            pcd = o3d.geometry.PointCloud()
+            pcd.points = o3d.utility.Vector3dVector(vertices)
+            pcd.colors = o3d.utility.Vector3dVector(colors)
+
+            return pcd
+
+        except Exception as e:
+            print(f"3D表面生成错误：{e}")
+            return None
+
     def infer_depth(self, image):
         """
         对输入图像进行深度推理
         :param image: 输入图像（BGR格式）
-        :return: 深度图（可视化后的图像）
+        :return: 深度图（可视化后的图像）和原始深度数据
         """
         if not self.enable_depth or self.depth_model is None:
-            return None
+            return None, None
 
         try:
             # 转换为RGB
@@ -210,11 +330,16 @@ class UnetPackage:
             mask3 = crop_mask.astype(bool)
             depth_vis[mask3] = depth_color[mask3]
 
-            return depth_vis
+            # 保存原始深度图和掩码用于点云生成
+            self.depth_raw = depth_resized
+            self.depth_mask = crop_mask
+            self.depth_color_original = depth_color
+
+            return depth_vis, depth_resized
 
         except Exception as e:
             print(f"深度推理错误：{e}")
-            return None
+            return None, None
 
     def crop_to_circle(self, image, fps=None, show_crosshair=True, show_circles=True, red_circles=None):
         """
@@ -435,10 +560,11 @@ class UnetPackage:
 
             # ===== 深度推理：使用Original circular图像帧作为输入 =====
             depth_display = None
+            depth_raw = None
             if self.enable_depth:
                 try:
                     # 使用圆形裁剪后的图像作为深度推理输入
-                    depth_result = self.infer_depth(circular)
+                    depth_result, depth_raw = self.infer_depth(circular)
                     if depth_result is not None:
                         # 调整深度图尺寸以匹配原始图像尺寸
                         depth_display = cv2.resize(depth_result, (circular.shape[1], circular.shape[0]))
@@ -820,6 +946,24 @@ class UnetPackage:
                 print(f"拼接窗口显示错误：{e}")
                 # 如果拼接失败，显示原来的video窗口
                 cv2.imshow("video", circular_frame)
+
+            # ===== 更新3D表面窗口（正等轴测图）=====
+            if self.enable_depth and self.pcd_init_done and hasattr(self, 'depth_raw') and hasattr(self, 'depth_mask'):
+                try:
+                    # 生成3D表面（Z轴拉伸25倍，XY缩小0.15倍）
+                    surface_3d = self.depth_to_3d_surface(self.depth_raw, self.depth_mask, scale_factor=25.0)
+                    if surface_3d is not None and len(surface_3d.points) > 0:
+                        # 更新点云
+                        self.surface_pcd.points = surface_3d.points
+                        self.surface_pcd.colors = surface_3d.colors
+
+                        # 更新可视化
+                        self.pcd_window.update_geometry(self.surface_pcd)
+                        self.pcd_window.poll_events()
+                        self.pcd_window.update_renderer()
+
+                except Exception as e:
+                    print(f"3D表面更新错误：{e}")
             if self.video_save_path != "":
                 out.write(frame)
 
@@ -830,7 +974,15 @@ class UnetPackage:
         capture.release()
         if self.video_save_path != "":
             out.release()
-        cv2.destroyAllWindows()       
+        cv2.destroyAllWindows()
+
+        # 关闭3D点云窗口
+        if self.pcd_window is not None:
+            try:
+                self.pcd_window.destroy_window()
+                print("3D点云窗口已关闭")
+            except Exception as e:
+                print(f"关闭3D点云窗口错误：{e}")       
 
     # def map_pic_values_to_motion_values(self):
     #     print(f"{get_time()}-正在映射赋值map_pic_values_to_motion_values") 

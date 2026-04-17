@@ -894,7 +894,7 @@ if __name__ == "__main__":
 
     unet_package = UnetPackage(
         mode='video',
-        video_path=1,
+        video_path=0,
         video_fps=30,
         enable_depth=True,
         depth_encoder='vitl',
