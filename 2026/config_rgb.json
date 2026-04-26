@@ -1,0 +1,11 @@
+{
+    "r_low": 0,
+    "g_low": 0,
+    "b_low": 0,
+    "r_high": 94,
+    "g_high": 50,
+    "b_high": 86,
+    "kernel_size": 15,
+    "min_area": 500,
+    "line_width": 3
+}

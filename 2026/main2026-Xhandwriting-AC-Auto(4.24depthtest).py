@@ -116,7 +116,7 @@ def video_processing() -> None:
     """视觉线程：持续运行Unet视频推理"""
     # 延迟导入 UnetPackage，避免模块导入时触发 torchvision/torch 的复杂依赖
     try:
-        from predict_2026_wqx_3dshow import UnetPackage  # type: ignore[import]
+        from predict_2026_wqx_3d_instruct import UnetPackage  # type: ignore[import]
     except Exception as exc:
         print(f"{get_time()}-视频模块导入失败，跳过视觉处理：{exc}")
         return

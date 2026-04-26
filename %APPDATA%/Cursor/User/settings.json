@@ -1,0 +1,6 @@
+{
+    "cursor.general.disableHttp2": false,
+    "terminal.integrated.defaultProfile.windows": "Command Prompt",
+    "cursor.agents.autoApplyEdits": false,
+    "cursor.experimental.agentAutoPersist": false
+}

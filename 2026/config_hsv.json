@@ -1,0 +1,11 @@
+{
+    "h_low": 0,
+    "s_low": 0,
+    "v_low": 0,
+    "h_high": 176,
+    "s_high": 59,
+    "v_high": 242,
+    "kernel_size": 9,
+    "min_area": 195,
+    "line_width": 0
+}

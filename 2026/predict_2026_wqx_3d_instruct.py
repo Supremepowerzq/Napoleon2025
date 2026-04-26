@@ -134,9 +134,35 @@ class UnetPackage:
         self.cy_k = None
         self.circle_mask = None
 
+        # 卡尔曼滤波器（用于腔道中心点平滑）
+        self.kalman_cavity = cv2.KalmanFilter(4, 2)
+        self.kalman_cavity.measurementMatrix = np.array([[1, 0, 0, 0],
+                                                          [0, 1, 0, 0]], np.float32)
+        self.kalman_cavity.transitionMatrix = np.array([[1, 0, 1, 0],
+                                                         [0, 1, 0, 1],
+                                                         [0, 0, 1, 0],
+                                                         [0, 0, 0, 1]], np.float32)
+        self.kalman_cavity.processNoiseCov = np.array([[1, 0, 0, 0],
+                                                        [0, 1, 0, 0],
+                                                        [0, 0, 1, 0],
+                                                        [0, 0, 0, 1]], np.float32) * 0.03
+
         # 深度状态变量
         self.depth_prev_mm = None
         self.depth_filt_mm = None
+
+        # 腔道岔口高亮状态：>=0 表示高亮对应索引的岔口（线宽2），-1表示全部正常显示（线宽1）
+        # 默认高亮最大岔口（索引0）
+        self._cav_highlight_idx = 0
+        # 上一帧按下的key，用于检测"新按下"（避免按住不放时自动循环）
+        self._prev_key = -1
+
+        # 腔道岔口深度状态（独立于结石深度）
+        self._cav_depth_prev_mm = None
+        self._cav_depth_filt_mm = None
+
+        # 追踪模式：1=结石追踪, 2=岔道追踪, 3=优先结石混合追踪
+        self._track_mode = 1
 
         # 加载去畸变maps（独立于深度模型）
         self._init_undistort_maps()
@@ -274,7 +300,7 @@ class UnetPackage:
             print(f"Depth inference error: {e}")
             return None
 
-    def crop_to_circle(self, image, fps=None, show_crosshair=True, show_circles=True, red_circles=None, depth_info=None):
+    def crop_to_circle(self, image, fps=None, show_crosshair=True, show_circles=True, red_circles=None, depth_info=None, mode_label=None):
         """将图像裁剪为圆形显示区域，添加十字准星、FPS、方向指示圆"""
         try:
             h, w = image.shape[:2]
@@ -327,7 +353,9 @@ class UnetPackage:
                 cv2.putText(result, "FPS:%.2f" % (fps), (0, 20),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
 
-            cv2.putText(result, "BIOMACH", (0, ch - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+            cv2.putText(result, mode_label if mode_label else "BIOMACH", (0, ch - 10),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.55 if mode_label else 0.7,
+                       (255, 255, 0) if mode_label else (255, 255, 255), 2, cv2.LINE_AA)
 
             if show_circles:
                 circle_centers = [(cw - 40, ch - 20),
@@ -594,30 +622,29 @@ class UnetPackage:
             # ============================================================
             # Step 7: 结石轮廓处理 - 找最大轮廓，计算质心，绘制（与predict_2026.py一致）
             # ============================================================
-            max = 0.0
+            max_area = 0.0
             max_num = 0
             min_contour_area = 10.0
 
             if len(contours2) > 0:
                 for i in range(len(contours2)):
                     c = cv2.contourArea(contours2[i])
-                    if c > max:
-                        max = c
+                    if c > max_area:
+                        max_area = c
                         max_num = i
 
                 # 计算结石面积占比
-                percentage1 = (max / total_pixels) * 100
+                percentage1 = (max_area / total_pixels) * 100
 
                 # 只有当最大轮廓面积超过阈值时才认为检测到有效目标
-                if max > min_contour_area:
+                if max_area > min_contour_area:
                     moments = cv2.moments(contours2[max_num])
                     if moments['m00'] != 0:
                         cx = int(moments['m10'] / moments['m00'])
                         cy = int(moments['m01'] / moments['m00'])
-                        # 绘制最大轮廓
-                        result = cv2.drawContours(frame, contours2[max_num], -1, (255, 255, 0), 3, cv2.LINE_AA)
+                        cv2.drawContours(frame, contours2[max_num], -1, (255, 255, 0), 3, cv2.LINE_AA)
                         # 绘制质心圆（半径20）
-                        frame = cv2.circle(frame, (cx, cy), 20, (255, 255, 0), -1, cv2.LINE_AA)
+                        frame = cv2.circle(frame, (cx, cy), 20, (0, 255, 0), -1, cv2.LINE_AA)
                     else:
                         cx = w // 2
                         cy = h // 2
@@ -634,168 +661,212 @@ class UnetPackage:
             # 文字显示已移除，避免被圆形掩膜遮挡
 
             # ============================================================
-            # Step 9: 深度估计（仅当检测到结石时，与predict_wqx.py一致）
+            # Step 9: 结石深度估计
             # ============================================================
-            if len(contours2) > 0 and depth_m is not None:
-                # 创建结石mask
+            stone_has_target = len(contours2) > 0 and max_area > min_contour_area
+            stone_z_ok = False
+
+            if stone_has_target and depth_m is not None:
                 stone_mask = np.zeros((h, w), dtype=np.uint8)
-                cv2.drawContours(stone_mask, [contours2[max_num]], -1, 255, thickness=cv2.FILLED, lineType=cv2.LINE_AA)
+                cv2.drawContours(stone_mask, [contours2[max_num]], -1, 255,
+                                 thickness=cv2.FILLED, lineType=cv2.LINE_AA)
                 stone_mask = (stone_mask * self.circle_mask).astype(np.uint8)
-
-                # 稳健深度估计
                 Z_pred_m, inlier = self.robust_depth_from_mask(depth_m, stone_mask, erode_r=3)
-
-                z_ok = False
-                Z_mm = None
 
                 if Z_pred_m is not None:
                     Z_pred_mm = Z_pred_m * 1000.0
                     Z_mm = self.depth_scale * Z_pred_mm + self.depth_bias
 
-                    # 深度门控
                     if (self.depth_min_mm <= Z_mm <= self.depth_max_mm) and (inlier >= self.inlier_min):
                         if self.depth_prev_mm is None or abs(Z_mm - self.depth_prev_mm) <= self.depth_jump_mm:
-                            z_ok = True
+                            stone_z_ok = True
                         else:
                             Z_mm = self.depth_prev_mm
-                            z_ok = True
+                            stone_z_ok = True
 
-                if z_ok:
-                    self.depth_prev_mm = Z_mm
+                    if stone_z_ok:
+                        self.depth_prev_mm = Z_mm
+                        if self.depth_filt_mm is None:
+                            self.depth_filt_mm = Z_mm
+                        else:
+                            self.depth_filt_mm = (1 - 0.2) * self.depth_filt_mm + 0.2 * Z_mm
 
-                    # 一阶低通滤波
-                    if self.depth_filt_mm is None:
-                        self.depth_filt_mm = Z_mm
+                        if self.depth_filt_mm >= self.depth_advance_mm:
+                            stone_speed_FR = safe_max_forward
+                        elif self.depth_filt_mm <= self.depth_stop_mm:
+                            stone_speed_FR = 0
+                        else:
+                            stone_speed_FR = int(safe_max_forward * (
+                                self.depth_filt_mm - self.depth_stop_mm) / (
+                                self.depth_advance_mm - self.depth_stop_mm))
+
+                        stone_depth_info = {
+                            'z_ok': True, 'z_mm': Z_mm,
+                            'z_filt': self.depth_filt_mm,
+                            'inlier': inlier, 'speed_FR': stone_speed_FR
+                        }
                     else:
-                        alpha = 0.2
-                        self.depth_filt_mm = (1 - alpha) * self.depth_filt_mm + alpha * Z_mm
-
-                    # 推进速度控制：基于滤波后深度，当z距离在8-15mm时线性插值
-                    if self.depth_filt_mm >= self.depth_advance_mm:
-                        speed_FR = safe_max_forward  # 全速前进
-                    elif self.depth_filt_mm <= self.depth_stop_mm:
-                        speed_FR = 0  # 停止
-                    else:
-                        # 在深度8-15mm范围内，从0到最大前进速度线性插值
-                        speed_FR = int(safe_max_forward * (self.depth_filt_mm - self.depth_stop_mm) / (self.depth_advance_mm - self.depth_stop_mm))
-
-                    # 更新深度信息（包含速度信息，用于在深度窗口显示）
-                    depth_info = {
-                        'z_ok': True,
-                        'z_mm': Z_mm,
-                        'z_filt': self.depth_filt_mm,
-                        'inlier': inlier,
-                        'speed_FR': speed_FR
-                    }
+                        stone_speed_FR = 0
+                        stone_depth_info = {
+                            'z_ok': False, 'z_mm': 0, 'z_filt': 0, 'inlier': 0, 'speed_FR': 0
+                        }
                 else:
-                    # 深度不可信
-                    speed_FR = 0
-                    depth_info = {
-                        'z_ok': False,
-                        'z_mm': 0,
-                        'z_filt': 0,
-                        'inlier': 0,
-                        'speed_FR': 0
+                    stone_speed_FR = 0
+                    stone_depth_info = {
+                        'z_ok': False, 'z_mm': 0, 'z_filt': 0, 'inlier': 0, 'speed_FR': 0
                     }
-
-            # ============================================================
-            # Step 10: 转向速度计算（严格按照predict_2026.py的逻辑）
-            # ============================================================
-            red_left = False
-            red_right = False
-            red_up = False
-            red_down = False
-
-            if len(contours2) > 0:
-                # 计算结石质心与画面中心的偏移量
-                Dx = center_x - cx
-                Dy = center_y - cy
-
-                PixelR = 10
-                red_left = Dx > PixelR
-                red_right = Dx < -PixelR
-                red_up = Dy < -PixelR
-                red_down = Dy > PixelR
-
-                # 获取控制参数
-                FC = FORWARD_COEFF
-                TC = TURN_COEFF
-                TC_S = TURN_COEFF_SLOW
-                Multiple = 3.0
-                M_x = 4.5
-                M_y = 8.0
-                # vx_max = 20.0
-                # vy_max = 0.6
-                vx_max = 30.0
-                vy_max = 0.4
-
-                # X方向控制（左右移动）
-                vx = 0.0
-                if red_left:
-                    abs_dx = abs(Dx)
-                    if abs_dx < PixelR:
-                        vx = 0.0
-                    elif abs_dx < M_x * PixelR:
-                        vx = -5.0 + (-vx_max) * (abs_dx - PixelR) / ((M_x - 1) * PixelR)
-                    else:
-                        vx = -vx_max
-
-                if red_right:
-                    abs_dx = abs(Dx)
-                    if abs_dx < PixelR:
-                        vx = 0.0
-                    elif abs_dx < M_x * PixelR:
-                        vx = 5 + (vx_max) * (abs_dx - PixelR) / ((M_x - 1) * PixelR)
-                    else:
-                        vx = vx_max
-
-                # Y方向控制（上下移动）
-                vy = 0.0
-                if red_up:
-                    abs_dy = abs(Dy)
-                    if abs_dy < PixelR:
-                        vy = 0.0
-                    elif abs_dy < M_y * PixelR:
-                        vy = -0.05 - vy_max * (abs_dy - PixelR) / ((M_y - 1) * PixelR)
-                    else:
-                        vy = -vy_max
-
-                if red_down:
-                    abs_dy = abs(Dy)
-                    if abs_dy < PixelR:
-                        vy = 0.0
-                    elif abs_dy < M_y * PixelR:
-                        vy = 0.05 + vy_max * (abs_dy - PixelR) / ((M_y - 1) * PixelR)
-                    else:
-                        vy = vy_max
-
-                # 写入config（与predict_2026.py一致，不额外限幅）
-                speed_FR = self.clamp(speed_FR, -safe_max_forward, safe_max_forward)
-                update_config('speed_pf', speed_FR)
-                update_config('speed_pt', [vx, vy])
             else:
-                # 没有检测到结石，速度置零
-                speed_FR = 0
-                update_config('speed_pf', 0)
-                update_config('speed_pt', [0, 0])
-                # 更新深度信息（无速度）
-                depth_info = {
-                    'z_ok': False,
-                    'z_mm': 0,
-                    'z_filt': 0,
-                    'inlier': 0,
-                    'speed_FR': 0
+                stone_speed_FR = 0
+                stone_depth_info = {
+                    'z_ok': False, 'z_mm': 0, 'z_filt': 0, 'inlier': 0, 'speed_FR': 0
                 }
 
             # ============================================================
-            # Step 11: 结石区域边框绘制（取消填充，改用边框避免变暗）
+            # Step 10: 腔道检测（无论何种模式均需检测，供显示和高亮切换）
             # ============================================================
-            if len(contours2) > 0:
-                # 直接绘制边框，不进行填充叠加，避免影响图像亮度
-                cv2.drawContours(frame, contours2, max_num, (0, 255, 0), 2, cv2.LINE_AA)
+            cav_sorted, mask_cavity_raw, labels = self._detect_cavities(frame, depth_m)
+
+            # 高亮岔口坐标
+            l_cx = None
+            l_cy = None
+            if cav_sorted and self._cav_highlight_idx >= 0:
+                idx = self._cav_highlight_idx
+                if idx < len(cav_sorted):
+                    l_cx = cav_sorted[idx]['cx']
+                    l_cy = cav_sorted[idx]['cy']
+
+            # 岔口深度和速度计算（供模式2/3使用）
+            cav_speed_FR = 0
+            cav_vx = 0.0
+            cav_vy = 0.0
+            cav_depth_info = {
+                'z_ok': False, 'z_mm': 0, 'z_filt': 0, 'inlier': 0, 'speed_FR': 0
+            }
+            if l_cx is not None and l_cy is not None:
+                cav_speed_FR, cav_vx, cav_vy, cav_depth_info = self._calc_cav_velocity(
+                    l_cx, l_cy, w, h, depth_m)
+            else:
+                self._cav_depth_prev_mm = None
+                self._cav_depth_filt_mm = None
 
             # ============================================================
-            # Step 12: 方向指示圆反馈
+            # Step 10b: 模式选择 → 计算最终速度 + 方向指示圆
+            # ============================================================
+            # 模式1：结石追踪
+            # 模式2：岔道追踪
+            # 模式3：优先结石混合追踪（有结石→结石；无结石→岔道）
+            red_left = red_right = red_up = red_down = False
+            active_depth_info = stone_depth_info
+
+            if self._track_mode == 1:
+                # 模式1：结石追踪
+                if stone_has_target:
+                    vx, vy, rl, rr, ru, rd = self._calc_stone_velocity(
+                        cx, cy, center_x, center_y, safe_max_forward)
+                    speed_FR = stone_speed_FR
+                    active_depth_info = stone_depth_info
+                    red_left, red_right, red_up, red_down = rl, rr, ru, rd
+                else:
+                    speed_FR = 0
+                    vx = 0.0
+                    vy = 0.0
+
+            elif self._track_mode == 2:
+                # 模式2：岔道追踪（无视结石）
+                if l_cx is not None and cav_depth_info['z_ok']:
+                    speed_FR = cav_speed_FR
+                    vx = cav_vx
+                    vy = cav_vy
+                    active_depth_info = cav_depth_info
+                    # 岔口偏移方向
+                    Dx = center_x - l_cx
+                    Dy = center_y - l_cy
+                    PixelR = 10
+                    red_left = Dx > PixelR
+                    red_right = Dx < -PixelR
+                    red_up = Dy < -PixelR
+                    red_down = Dy > PixelR
+                else:
+                    speed_FR = 0
+                    vx = 0.0
+                    vy = 0.0
+
+            else:  # mode == 3
+                # 模式3：优先结石混合追踪
+                if stone_has_target and stone_depth_info['z_ok']:
+                    vx, vy, rl, rr, ru, rd = self._calc_stone_velocity(
+                        cx, cy, center_x, center_y, safe_max_forward)
+                    speed_FR = stone_speed_FR
+                    active_depth_info = stone_depth_info
+                    red_left, red_right, red_up, red_down = rl, rr, ru, rd
+                elif l_cx is not None and cav_depth_info['z_ok']:
+                    speed_FR = cav_speed_FR
+                    vx = cav_vx
+                    vy = cav_vy
+                    active_depth_info = cav_depth_info
+                    Dx = center_x - l_cx
+                    Dy = center_y - l_cy
+                    PixelR = 10
+                    red_left = Dx > PixelR
+                    red_right = Dx < -PixelR
+                    red_up = Dy < -PixelR
+                    red_down = Dy > PixelR
+                else:
+                    speed_FR = 0
+                    vx = 0.0
+                    vy = 0.0
+
+            speed_FR = self.clamp(speed_FR, -safe_max_forward, safe_max_forward)
+            update_config('speed_pf', speed_FR)
+            update_config('speed_pt', [vx, vy])
+
+            # ============================================================
+            # Step 11: 绘制结石和腔道轮廓
+            # ============================================================
+            # 结石轮廓（全部）
+            if len(contours2) > 0:
+                for idx, cnt in enumerate(contours2):
+                    area = cv2.contourArea(cnt)
+                    if area >= min_contour_area:
+                        if idx == max_num:
+                            color = (0, 255, 0)
+                            thickness = 3
+                        else:
+                            color = (150, 255, 150)
+                            thickness = 1
+                        cv2.drawContours(frame, [cnt], -1, color, thickness, cv2.LINE_AA)
+
+            # 腔道轮廓（全部，按高亮）
+            if cav_sorted:
+                for idx, cav in enumerate(cav_sorted):
+                    is_highlighted = (
+                        self._cav_highlight_idx >= 0 and idx == self._cav_highlight_idx
+                    )
+                    color_cav = (255, 255, 0)
+                    thickness = 2 if is_highlighted else 1
+
+                    region_mask = np.zeros_like(mask_cavity_raw)
+                    region_mask[labels == cav['label']] = 255
+                    contours, _ = cv2.findContours(
+                        region_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+                    if contours:
+                        cv2.drawContours(frame, contours, -1, color_cav, thickness, cv2.LINE_AA)
+                    r_small = 5 if idx == 0 else 3
+                    cv2.circle(frame, (cav['cx'], cav['cy']), r_small, color_cav, -1, cv2.LINE_AA)
+
+                    if idx == 0:
+                        cv2.putText(frame,
+                                    f"Cavity-1: ({cav['cx']},{cav['cy']})  Area={int(cav['area'])}",
+                                    (8, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
+                                    (0, 200, 255), 1, cv2.LINE_AA)
+                    else:
+                        cv2.putText(frame,
+                                    f"Cavity-{idx+1}: ({cav['cx']},{cav['cy']})",
+                                    (8, 22 + idx * 16), cv2.FONT_HERSHEY_SIMPLEX, 0.38,
+                                    (150, 255, 150), 1, cv2.LINE_AA)
+
+            # ============================================================
+            # Step 12: 方向指示圆 + 深度窗口 + 模式标签
             # ============================================================
             red_circle_indices = []
             if red_left:
@@ -807,24 +878,30 @@ class UnetPackage:
             if red_down:
                 red_circle_indices.append(3)
 
-            # UNet分割窗口：裁剪为圆形并添加UI元素
+            # 模式名称
+            mode_names = {1: "Mode-1: Stone Tracking",
+                          2: "Mode-2: Cavity Tracking",
+                          3: "Mode-3: Hybrid Tracking"}
+            mode_label = mode_names.get(self._track_mode, "Mode-?: Unknown")
+
+            # UNet分割窗口
             try:
                 circular_unet = self.crop_to_circle(frame, fps=fps, show_crosshair=True,
-                                                     show_circles=True, red_circles=red_circle_indices)
+                                                     show_circles=True, red_circles=red_circle_indices,
+                                                     mode_label=mode_label)
             except Exception as e:
                 print(f"UNet crop error: {e}")
                 circular_unet = frame
 
-            # 深度窗口：圆形裁剪并添加深度和速度信息
+            # 深度窗口
             try:
-                # 在深度图上绘制结石轮廓和质心（白色）
                 depth_with_stone = depth_vis.copy()
-                if len(contours2) > 0 and max > min_contour_area:
+                if stone_has_target:
                     cv2.drawContours(depth_with_stone, contours2[max_num], -1, (255, 255, 255), 3, cv2.LINE_AA)
                     cv2.circle(depth_with_stone, (cx, cy), 20, (255, 255, 255), -1, cv2.LINE_AA)
-                
+
                 circular_depth = self.crop_to_circle(depth_with_stone, fps=fps, show_crosshair=True,
-                                                     show_circles=False, depth_info=depth_info)
+                                                     show_circles=False, depth_info=active_depth_info)
             except Exception as e:
                 print(f"Depth crop error: {e}")
                 circular_depth = depth_vis
@@ -887,6 +964,37 @@ class UnetPackage:
             if c == 27:
                 break
 
+            # 按 1/2/3 键切换追踪模式
+            if c in (ord('1'), ord('2'), ord('3')) and c != self._prev_key:
+                self._track_mode = c - ord('0')
+                mode_names = {1: "Mode-1: Stone Tracking",
+                              2: "Mode-2: Cavity Tracking",
+                              3: "Mode-3: Hybrid Tracking"}
+                cv2.setWindowTitle("Combined View: Original | UNet | Depth | 3D PointCloud",
+                                   mode_names.get(self._track_mode, ""))
+
+            # 按 h/H 键：手动切换腔道岔口高亮（线宽2），从大到小顺序切换
+            if c in (ord('h'), ord('H')) and c != self._prev_key:
+                total_cav = len(cav_sorted)
+                if total_cav > 0:
+                    if self._cav_highlight_idx < total_cav - 1:
+                        self._cav_highlight_idx += 1
+                    else:
+                        self._cav_highlight_idx = -1
+                    if self._cav_highlight_idx < 0:
+                        msg = f"All cavities (no highlight)"
+                    else:
+                        msg = f"Highlight Cavity-{self._cav_highlight_idx + 1}"
+                    cv2.setWindowTitle("UNet", msg)
+                else:
+                    self._cav_highlight_idx = 0
+
+            # 安全保护：索引超出当前岔口数量时重置
+            if len(cav_sorted) == 0:
+                self._cav_highlight_idx = -1
+
+            self._prev_key = c
+
         # 退出前停止电机
         update_config('speed_pf', 0)
         update_config('speed_pt', [0, 0])
@@ -894,6 +1002,221 @@ class UnetPackage:
         if self.video_save_path != "":
             out.release()
         cv2.destroyAllWindows()
+
+    def _calc_stone_velocity(self, cx, cy, center_x, center_y, safe_max_forward=80):
+        """
+        结石追踪速度计算：
+        - 结石质心与画面中心偏移 → vx, vy（转向速度）
+        - 结石质心深度值 → speed_FR（前进速度）
+        返回 (speed_FR, vx, vy, depth_info, red_left, red_right, red_up, red_down)
+        """
+        Dx = center_x - cx
+        Dy = center_y - cy
+
+        PixelR = 10
+        red_left = Dx > PixelR
+        red_right = Dx < -PixelR
+        red_up = Dy < -PixelR
+        red_down = Dy > PixelR
+
+        vx_max = 30.0
+        vy_max = 0.4
+        M_x = 4.5
+        M_y = 8.0
+
+        # X方向 → vx
+        vx = 0.0
+        if red_left:
+            abs_dx = abs(Dx)
+            if abs_dx < PixelR:
+                vx = 0.0
+            elif abs_dx < M_x * PixelR:
+                vx = -5.0 + (-vx_max) * (abs_dx - PixelR) / ((M_x - 1) * PixelR)
+            else:
+                vx = -vx_max
+
+        if red_right:
+            abs_dx = abs(Dx)
+            if abs_dx < PixelR:
+                vx = 0.0
+            elif abs_dx < M_x * PixelR:
+                vx = 5 + (vx_max) * (abs_dx - PixelR) / ((M_x - 1) * PixelR)
+            else:
+                vx = vx_max
+
+        # Y方向 → vy
+        vy = 0.0
+        if red_up:
+            abs_dy = abs(Dy)
+            if abs_dy < PixelR:
+                vy = 0.0
+            elif abs_dy < M_y * PixelR:
+                vy = -0.05 - vy_max * (abs_dy - PixelR) / ((M_y - 1) * PixelR)
+            else:
+                vy = -vy_max
+
+        if red_down:
+            abs_dy = abs(Dy)
+            if abs_dy < PixelR:
+                vy = 0.0
+            elif abs_dy < M_y * PixelR:
+                vy = 0.05 + vy_max * (abs_dy - PixelR) / ((M_y - 1) * PixelR)
+            else:
+                vy = vy_max
+
+        return vx, vy, red_left, red_right, red_up, red_down
+
+    def _detect_cavities(self, frame, depth_m):
+        """
+        腔道岔口检测：min(RGB)亮度阈值 + connectedComponentsWithStats
+        返回 cav_sorted（按面积从大到小排序的岔口列表）和 cav_mask_raw
+        """
+        min_rgb_thresh = 50
+        kernel_cav = np.ones((15, 15), np.uint8)
+        min_cav_area = 2000
+
+        b_ch, g_ch, r_ch = cv2.split(frame)
+        min_rgb = cv2.min(cv2.min(b_ch, g_ch), r_ch)
+        mask_cavity_raw = cv2.inRange(min_rgb, 0, min_rgb_thresh)
+        mask_cavity_raw = cv2.bitwise_and(mask_cavity_raw, mask_cavity_raw, mask=self.circle_mask)
+        mask_cavity_raw = cv2.morphologyEx(mask_cavity_raw, cv2.MORPH_OPEN, kernel_cav)
+
+        n_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
+            mask_cavity_raw, connectivity=8)
+        cav_valid = []
+        for i in range(1, n_labels):
+            if stats[i, cv2.CC_STAT_AREA] >= min_cav_area:
+                cav_valid.append({
+                    'label': i,
+                    'area': stats[i, cv2.CC_STAT_AREA],
+                    'cx': int(centroids[i, 0]),
+                    'cy': int(centroids[i, 1]),
+                    'x': stats[i, cv2.CC_STAT_LEFT],
+                    'y': stats[i, cv2.CC_STAT_TOP],
+                    'w': stats[i, cv2.CC_STAT_WIDTH],
+                    'h': stats[i, cv2.CC_STAT_HEIGHT],
+                })
+
+        cav_sorted = sorted(cav_valid, key=lambda x: x['area'], reverse=True) if cav_valid else []
+        return cav_sorted, mask_cavity_raw, labels
+
+    def _calc_cav_velocity(self, l_cx, l_cy, frame_w, frame_h, depth_m):
+        """
+        腔道岔口速度计算（独立于结石控制）：
+        - 岔口中心点深度值决定前进速度（与结石深度逻辑相同）
+        - 岔口中心点偏移决定转向速度（与结石偏移逻辑相同）
+        返回 (speed_FR, vx, vy, cav_depth_info)
+        """
+        cav_vx = 0.0
+        cav_vy = 0.0
+        cav_speed_FR = 0
+        center_x = frame_w // 2
+        center_y = frame_h // 2
+
+        cav_depth_info = {
+            'z_ok': False, 'z_mm': 0, 'z_filt': 0, 'inlier': 0
+        }
+
+        if l_cx is None or l_cy is None:
+            return cav_speed_FR, cav_vx, cav_vy, cav_depth_info
+
+        Dx = center_x - l_cx
+        Dy = center_y - l_cy
+        PixelR = 10
+        cav_left = Dx > PixelR
+        cav_right = Dx < -PixelR
+        cav_up = Dy < -PixelR
+        cav_down = Dy > PixelR
+
+        safe_max_forward = 80
+        vx_max = 30.0
+        vy_max = 0.4
+        M_x = 4.5
+        M_y = 8.0
+
+        # 岔口中心X方向偏移 → vx
+        if cav_left:
+            abs_dx = abs(Dx)
+            if abs_dx < PixelR:
+                cav_vx = 0.0
+            elif abs_dx < M_x * PixelR:
+                cav_vx = -5.0 + (-vx_max) * (abs_dx - PixelR) / ((M_x - 1) * PixelR)
+            else:
+                cav_vx = -vx_max
+
+        if cav_right:
+            abs_dx = abs(Dx)
+            if abs_dx < PixelR:
+                cav_vx = 0.0
+            elif abs_dx < M_x * PixelR:
+                cav_vx = 5 + (vx_max) * (abs_dx - PixelR) / ((M_x - 1) * PixelR)
+            else:
+                cav_vx = vx_max
+
+        # 岔口中心Y方向偏移 → vy
+        if cav_up:
+            abs_dy = abs(Dy)
+            if abs_dy < PixelR:
+                cav_vy = 0.0
+            elif abs_dy < M_y * PixelR:
+                cav_vy = -0.05 - vy_max * (abs_dy - PixelR) / ((M_y - 1) * PixelR)
+            else:
+                cav_vy = -vy_max
+
+        if cav_down:
+            abs_dy = abs(Dy)
+            if abs_dy < PixelR:
+                cav_vy = 0.0
+            elif abs_dy < M_y * PixelR:
+                cav_vy = 0.05 + vy_max * (abs_dy - PixelR) / ((M_y - 1) * PixelR)
+            else:
+                cav_vy = vy_max
+
+        # 岔口中心点深度 → 前进速度
+        if depth_m is not None:
+            # 取岔口中心点周围半径r的圆形区域mask
+            r = 30
+            cav_mask_single = np.zeros((frame_h, frame_w), dtype=np.uint8)
+            cv2.circle(cav_mask_single, (l_cx, l_cy), r, 255, -1)
+            Z_pred_m, inlier = self.robust_depth_from_mask(depth_m, cav_mask_single, erode_r=3)
+
+            z_ok = False
+            Z_mm = None
+
+            if Z_pred_m is not None:
+                Z_pred_mm = Z_pred_m * 1000.0
+                Z_mm = self.depth_scale * Z_pred_mm + self.depth_bias
+
+                if (self.depth_min_mm <= Z_mm <= self.depth_max_mm) and (inlier >= self.inlier_min):
+                    if self._cav_depth_prev_mm is None or abs(Z_mm - self._cav_depth_prev_mm) <= self.depth_jump_mm:
+                        z_ok = True
+                    else:
+                        Z_mm = self._cav_depth_prev_mm
+                        z_ok = True
+
+            if z_ok:
+                self._cav_depth_prev_mm = Z_mm
+                alpha = 0.2
+                if self._cav_depth_filt_mm is None:
+                    self._cav_depth_filt_mm = Z_mm
+                else:
+                    self._cav_depth_filt_mm = (1 - alpha) * self._cav_depth_filt_mm + alpha * Z_mm
+
+                if self._cav_depth_filt_mm >= self.depth_advance_mm:
+                    cav_speed_FR = safe_max_forward
+                elif self._cav_depth_filt_mm <= self.depth_stop_mm:
+                    cav_speed_FR = 0
+                else:
+                    cav_speed_FR = int(safe_max_forward * (self._cav_depth_filt_mm - self.depth_stop_mm) / (self.depth_advance_mm - self.depth_stop_mm))
+
+                cav_depth_info = {
+                    'z_ok': True,
+                    'z_mm': Z_mm,
+                    'z_filt': self._cav_depth_filt_mm,
+                    'inlier': inlier
+                }
+
+        return cav_speed_FR, cav_vx, cav_vy, cav_depth_info
 
     def make_circle_mask_for_size(self, w, h, center_x, center_y, radius):
         """为指定尺寸创建圆形掩码"""
