@@ -26,40 +26,26 @@ config_dict = {
 # 更新允许标记
 allow_update = {key: True for key in config_dict}
 
+# 上一次成功获取的值缓存（hold-last：无新帧时沿用上帧指令，避免60Hz控制/30fps视觉频率差导致每帧交替停止）
+_config_last = {'speed_pf': 0, 'speed_pt': [0, 0]}
+
 # 提供函数来更新配置
 def update_config(key, value):
     if allow_update[key]:
-        # print('update可更新')
-        # print(key, value)
         config_dict[key].append(value)
-        # if key == 'speed_pt':
-        #    print(config_dict[key])
-
         allow_update[key] = False  # 更新后禁止再次更新，直到值被获取
-    # else:
-    #     print('update不可更新')
-    
 
 # 提供函数来获取配置
 def get_config(key):
     if allow_update[key]:
-        # print('get-可更新状态')
-        if key == 'speed_pf':
-            value = 0
-        elif key == 'speed_pt':
-            value = [0, 0]
+        # 无新视觉帧：返回上一次的值，而非强制归零
+        # 视觉主动写 [0,0] 时停止命令仍可正确传递
+        value = _config_last[key]
     else:
-        # print('get-不可更新状态')
-        # if config_dict[key]:
-        value = config_dict[key].pop(-1)  # 获取并移除第一个值
+        value = config_dict[key].pop(-1)
+        _config_last[key] = value  # 缓存最新值
         allow_update[key] = True
-        # else:  # 当config_dict[key]为空时
-        #     if key == 'speed_pf':
-        #         value = 0
-        #     elif key == 'speed_pt':
-        #         value = [0, 0]
-    # time.sleep(0.1)    
-    return value    
+    return value
         
 
     

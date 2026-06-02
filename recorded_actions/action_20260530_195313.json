@@ -1,0 +1,30 @@
+{
+  "initial_state": {
+    "timestamp": 0.0,
+    "motor_0": -719.0,
+    "motor_1": -6.0,
+    "motor_2": 360.0
+  },
+  "final_state": {
+    "timestamp": 1.5250236988067627,
+    "motor_0": -719,
+    "motor_1": -6,
+    "motor_2": 360
+  },
+  "actions": [
+    {
+      "timestamp": 0.0,
+      "motor_0": -719.0,
+      "motor_1": -6.0,
+      "motor_2": 360.0
+    },
+    {
+      "timestamp": 1.5250236988067627,
+      "motor_0": -719,
+      "motor_1": -6,
+      "motor_2": 360
+    }
+  ],
+  "duration": 1.5250236988067627,
+  "created_at": "20260530_195313"
+}

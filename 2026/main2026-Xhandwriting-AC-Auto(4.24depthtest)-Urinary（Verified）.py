@@ -1453,8 +1453,8 @@ class MotorGroup2025:
         # 电机限位角度（度）
         self.m0_limit = (0.0, 900.0)     # 电机0的限位：0~900度
         self.m1_limit = (-180.0, 180.0)  # 电机1的限位：-180~+180度
-        self.m2_limit = (-20.0, 30.0)    # 电机2的限位：-20~+30度
-        
+        self.m2_limit = (-15.0, 15.0)    # 电机2的限位：-10~+10度
+
         # 串口访问锁，防止UI控制和手柄控制同时访问串口
         self.serial_lock = threading.Lock()
 
@@ -1504,17 +1504,20 @@ class MotorGroup2025:
             current_pos = motor.position
             increment = speed / 60.0  # 以 60Hz 控制频率估算位置增量
             projected_pos = current_pos + increment
-            limit_tolerance = 0.5  # 允许的误差带
+            # 速度模式的电机（M0/M1）使用较紧的公差带，确保抵住限位后完全静止
+            limit_tolerance = 0.15
 
             # 当前已经抵住上限，且仍然往正方向推 -> 保持在上限
             if current_pos >= limit_max - limit_tolerance and speed > 0:
                 motor.set_position(limit_max, max_speed=TURN_COEFF)
-                motor.stop()
+                motor.update_state()   # 同步缓存值
+                motor.stop()          # 发出停止指令，解除速度闭环残留
                 print(f"{get_time()}-电机{motor.id}停在上限：{current_pos:.1f}° -> {limit_max:.1f}°")
                 return
             # 当前已经抵住下限，且仍然往负方向推 -> 保持在下限
             if current_pos <= limit_min + limit_tolerance and speed < 0:
                 motor.set_position(limit_min, max_speed=TURN_COEFF)
+                motor.update_state()
                 motor.stop()
                 print(f"{get_time()}-电机{motor.id}停在下限：{current_pos:.1f}° -> {limit_min:.1f}°")
                 return
@@ -1522,12 +1525,14 @@ class MotorGroup2025:
             # 预计即将越过上限（且指令仍为正） -> 拉回
             if projected_pos >= limit_max and speed > 0:
                 motor.set_position(limit_max, max_speed=TURN_COEFF)
+                motor.update_state()
                 motor.stop()
                 print(f"{get_time()}-电机{motor.id}触发上限限位：{current_pos:.1f}° -> {limit_max:.1f}°")
                 return
             # 预计即将越过下限（且指令仍为负） -> 拉回
             if projected_pos <= limit_min and speed < 0:
                 motor.set_position(limit_min, max_speed=TURN_COEFF)
+                motor.update_state()
                 motor.stop()
                 print(f"{get_time()}-电机{motor.id}触发下限限位：{current_pos:.1f}° -> {limit_min:.1f}°")
                 return
@@ -2045,11 +2050,21 @@ class VisionRobotStateMachine:
         while not self.motors.angle_return():
             busy_maintain_target_frequency(60, time.perf_counter())
         self.motors.stop()
+        # 归零完成后：强制将软件缓存的 M2 目标重置为 0，
+        # 确保下次手动控制时从 0 开始累加，不会跳回旧位置
+        with self.manual_input_lock:
+            self.manual_targets['m2'] = 0.0
+            self.manual_targets_filtered['m2'] = 0.0
         print(f"{get_time()}-角度归零完成")
 
     def _set_zero_point(self) -> None:
         print(f"{get_time()}-设定当前位置为零点（写入ROM并重启）...")
         self.motors.set_current_position_as_zero_point()
+        # 写入 ROM 后：强制将软件缓存的 M2 目标重置为 0，
+        # 这样电机重启后，软件缓存的累积角度与实际 0 位置一致
+        with self.manual_input_lock:
+            self.manual_targets['m2'] = 0.0
+            self.manual_targets_filtered['m2'] = 0.0
         print(f"{get_time()}-零点设定完成")
 
     @staticmethod
@@ -2418,83 +2433,72 @@ class VisionRobotStateMachine:
             except Exception as exc:
                 print(f"{get_time()}-M1 speed control error: {exc}")
 
-            # ------------------------
-            # M2: 垂直轴（位置控制）
-            # motor.set_position(target_angle, max_speed=TURN_COEFF)
-            # ------------------------
-            # vertical_speed 为本帧期望的角度增量（deg），先乘以灵敏度系数得到实际的角度增量 d2
-            with self.manual_input_lock:
-                d2 = vertical_speed * self.m2_sensitivity_multiplier
+            # M2 垂直轴：位置控制，限位独立处理
+            # 策略：每帧读一次位置（仅此处）、纯 clamp 裁剪、超过限位强制停止并同步缓存
+            m2_done = False  # 本帧 M2 处理是否已完成（发命令或跳过）
+            new_m2 = 0.0     # 本帧计算的最终目标角度
 
+            try:
+                self.motors.m2.update_state()
+                cur_m2_pos = float(self.motors.m2.position)
+            except Exception as exc:
+                cur_m2_pos = self.manual_targets.get('m2', 0.0)
 
-                # 确保 manual_targets['m2'] 已初始化为最近一次已知角度，避免首次设置跳变
-                try:
-                    _, _, cached_m2 = self.motors.get_cached_angles()
-                except Exception:
-                    cached_m2 = self.manual_targets.get('m2', 0.0)
-                if abs(self.manual_targets.get('m2', 0.0)) < 1e-6:
-                    # 如果 manual_targets 近似为 0（未初始化），使用缓存值进行初始化
-                    self.manual_targets['m2'] = cached_m2
-                    self.manual_targets_filtered['m2'] = cached_m2
+            try:
+                with self.manual_input_lock:
+                    d2 = vertical_speed * self.m2_sensitivity_multiplier
 
-                # 计算新的目标角度并在限位范围内裁剪
-                new_m2 = self._clamp_angle(self.manual_targets['m2'] + d2, self.motors.m2_limit)
-
-                # 只有当新目标与当前 manual_targets 差异大于最小增量时才认为需要发送命令（避免无意义的小抖动）
-                if abs(new_m2 - self.manual_targets['m2']) >= self.manual_min_delta_deg:
-                    # 更新 raw 目标
-                    self.manual_targets['m2'] = new_m2
-                    filtered_prev = self.manual_targets_filtered.get('m2', new_m2)
-
-                    # 当新目标与上次过滤后的目标差异超过 deadband（明显移动）时才发位置命令
-                    if abs(new_m2 - filtered_prev) >= self.m2_deadband_deg:
-                        # 读取缓存的电机角度（若可用）用于后续判断是否需要做 fallback
+                    # 微小输入视为停止：发一次 stop 确保电机静止
+                    if abs(d2) < 1e-4:
+                        m2_done = True
                         try:
-                            cached = self.motors.get_cached_angles()
-                            cached_m2 = cached[2]
+                            self.motors.m2.stop()
                         except Exception:
-                            cached_m2 = None
+                            pass
+                    else:
+                        # 从软件缓存目标累加增量
+                        raw_target = self.manual_targets['m2'] + d2
+                        # 裁剪到限位范围
+                        limit_lo, limit_hi = self.motors.m2_limit
+                        clamped = max(min(raw_target, limit_hi), limit_lo)
 
-                        # 更新 filtered 目标并尝试发送位置命令（位置闭环）
+                        # 判断本帧是否撞到了限位
+                        at_limit = (clamped == limit_lo or clamped == limit_hi)
+
+                        if at_limit:
+                            # 撞限位：发 set_position 到限位角度，再 stop，最后同步缓存
+                            new_m2 = clamped
+                            try:
+                                self.motors.m2.set_position(clamped, max_speed=TURN_COEFF)
+                                self.motors.m2.stop()
+                            except Exception as exc_limit:
+                                print(f"{get_time()}-M2限位命令异常: {exc_limit}")
+                            # 无论 set_position 是否成功，都要强制同步缓存到限位角度
+                            self.manual_targets['m2'] = clamped
+                            self.manual_targets_filtered['m2'] = clamped
+                            m2_done = True
+                            print(f"{get_time()}-M2限位：{cur_m2_pos:.2f}° -> {clamped:.2f}°")
+                        else:
+                            # 正常区间：累积到 clamped
+                            new_m2 = clamped
+
+                # with 块结束后处理发送（不在 with 内控制流）
+                if not m2_done:
+                    # 更新软件缓存（累积目标）
+                    self.manual_targets['m2'] = new_m2
+                    # 发送阈值过滤：只有与上次发送目标的差异足够大才发命令
+                    last_sent = self.manual_targets_filtered.get('m2', new_m2)
+                    if abs(new_m2 - last_sent) >= self.m2_deadband_deg:
+                        self.manual_targets_filtered['m2'] = new_m2
                         try:
-                            self.manual_targets_filtered['m2'] = new_m2
-                            self.motors.set_motor_position(2, new_m2, max_speed=TURN_COEFF)
+                            self.motors.m2.set_position(new_m2, max_speed=TURN_COEFF)
                         except Exception as exc:
-                            print(f"{get_time()}-M2 position set error: {exc}")
+                            print(f"{get_time()}-M2位置命令错误: {exc}")
                             if self.voice_window:
                                 self.voice_window.push_log(f"M2 position set error: {exc}")
 
-                        # 立即尝试读取电机实际位置（用于判断位置是否发生了变化）
-                        cur_pos = None
-                        try:
-                            self.motors.m2.update_state()
-                            cur_pos = float(self.motors.m2.position)
-                        except Exception as exc_up:
-                            print(f"{get_time()}-M2 manual update_state failed: {exc_up}")
-                            if self.voice_window:
-                                self.voice_window.push_log(f"M2 manual update_state failed: {exc_up}")
-
-                        # 如果位置没有实际变化（或读取失败），使用短速脉冲作为后备（fallback）
-                        try:
-                            prev_pos = filtered_prev
-                            moved_threshold = max(self.m2_deadband_deg, 0.05)
-                            if cur_pos is None or (prev_pos is not None and abs(cur_pos - prev_pos) < moved_threshold):
-                                direction = 1.0 if (new_m2 - prev_pos) >= 0 else -1.0
-                                test_speed = getattr(self, "vision_fallback_speed", 4.0) * direction
-                                try:
-                                    # 发送短时速度脉冲（点动），然后停下，再读取位置
-                                    self.motors.map_vertical(test_speed)
-                                    time.sleep(0.12)
-                                    self.motors.map_vertical(0.0)
-                                    self.motors.m2.update_state()
-                                    pos_after = float(self.motors.m2.position)
-                                except Exception as exc_fb:
-                                    print(f"{get_time()}-M2 manual fallback failed: {exc_fb}")
-                                    if self.voice_window:
-                                        self.voice_window.push_log(f"M2 manual fallback failed: {exc_fb}")
-                        except Exception:
-                            # 忽略回退逻辑中的所有异常，避免影响主循环
-                            pass
+            except Exception as exc:
+                print(f"{get_time()}-M2执行异常: {exc}")
         except (ValueError, Exception) as exc:
             error_msg = f"手动控制执行异常：{exc}"
             print(f"{get_time()}-{error_msg}")
@@ -2528,94 +2532,60 @@ class VisionRobotStateMachine:
             except Exception as exc:
                 print(f"{get_time()}-M1 speed control error: {exc}")
 
-            # ------------------------
-            # M2: 垂直轴（位置控制）
-            # motor.set_position(target_angle, max_speed=TURN_COEFF)
-            # ------------------------
-            # vertical_speed 为本帧期望的角度增量（deg），先乘以灵敏度系数得到实际的角度增量 d2
-            with self.manual_input_lock:
-                d2 = vertical_input * self.m2_sensitivity_multiplier
+            # M2 垂直轴：位置控制，限位独立处理（与手动模式逻辑一致）
+            m2_done = False
+            new_m2 = 0.0
 
-                # 确保 manual_targets['m2'] 已初始化为最近一次已知角度，避免首次设置跳变
-                try:
-                    _, _, cached_m2 = self.motors.get_cached_angles()
-                except Exception:
-                    cached_m2 = self.manual_targets.get('m2', 0.0)
-                if abs(self.manual_targets.get('m2', 0.0)) < 1e-6:
-                    # 如果 manual_targets 近似为 0（未初始化），使用缓存值进行初始化
-                    self.manual_targets['m2'] = cached_m2
-                    self.manual_targets_filtered['m2'] = cached_m2
+            try:
+                self.motors.m2.update_state()
+                cur_m2_pos = float(self.motors.m2.position)
+            except Exception as exc:
+                cur_m2_pos = self.manual_targets.get('m2', 0.0)
 
-                # 计算新的目标角度并在限位范围内裁剪
-                new_m2 = self._clamp_angle(self.manual_targets['m2'] + d2, self.motors.m2_limit)
+            try:
+                with self.manual_input_lock:
+                    d2 = vertical_input * self.m2_sensitivity_multiplier
 
-                # 只有当新目标与当前 manual_targets 差异大于最小增量时才认为需要发送命令（避免无意义的小抖动）
-                if abs(new_m2 - self.manual_targets['m2']) >= self.manual_min_delta_deg:
-                    # 更新 raw 目标
-                    self.manual_targets['m2'] = new_m2
-                    filtered_prev = self.manual_targets_filtered.get('m2', new_m2)
-
-                    # 当新目标与上次过滤后的目标差异超过 deadband（明显移动）时才发位置命令
-                    if abs(new_m2 - filtered_prev) >= self.m2_deadband_deg:
-                        # 读取缓存的电机角度（若可用）用于后续判断是否需要做 fallback
+                    if abs(d2) < 1e-4:
+                        m2_done = True
                         try:
-                            cached = self.motors.get_cached_angles()
-                            cached_m2 = cached[2]
+                            self.motors.m2.stop()
                         except Exception:
-                            cached_m2 = None
+                            pass
+                    else:
+                        raw_target = self.manual_targets['m2'] + d2
+                        limit_lo, limit_hi = self.motors.m2_limit
+                        clamped = max(min(raw_target, limit_hi), limit_lo)
+                        at_limit = (clamped == limit_lo or clamped == limit_hi)
 
-                        # # # 构造并输出一条简洁的日志信息（仅关键信息）
-                        # # debug_msg = (
-                        # #     f"M2 manual control -> new:{new_m2:.3f} filtered_prev:{filtered_prev:.3f} "
-                        # #     f"deadband:{self.m2_deadband_deg} cached_m2:{cached_m2 if cached_m2 is None else f'{cached_m2:.3f}'}"
-                        # # )
-                        # # print(f"{get_time()}-{debug_msg}")
-                        # if self.voice_window:
-                        #     self.voice_window.push_log(debug_msg)
+                        if at_limit:
+                            new_m2 = clamped
+                            try:
+                                self.motors.m2.set_position(clamped, max_speed=TURN_COEFF)
+                                self.motors.m2.stop()
+                            except Exception as exc_limit:
+                                print(f"{get_time()}-M2限位命令异常: {exc_limit}")
+                            self.manual_targets['m2'] = clamped
+                            self.manual_targets_filtered['m2'] = clamped
+                            m2_done = True
+                            print(f"{get_time()}-M2限位(vision)：{cur_m2_pos:.2f}° -> {clamped:.2f}°")
+                        else:
+                            new_m2 = clamped
 
-                        # 更新 filtered 目标并尝试发送位置命令（位置闭环）
+                if not m2_done:
+                    self.manual_targets['m2'] = new_m2
+                    last_sent = self.manual_targets_filtered.get('m2', new_m2)
+                    if abs(new_m2 - last_sent) >= self.m2_deadband_deg:
+                        self.manual_targets_filtered['m2'] = new_m2
                         try:
-                            self.manual_targets_filtered['m2'] = new_m2
-                            # print(f"{get_time()}-手动模式M2位置控制: 发送位置命令 -> 目标角度={new_m2:.3f}°, max_speed={TURN_COEFF}")
-                            if self.voice_window:
-                                self.voice_window.push_log(f"视觉模式M2位置控制: 目标角度={new_m2:.3f}°")
-                            self.motors.set_motor_position(2, new_m2, max_speed=TURN_COEFF)
+                            self.motors.m2.set_position(new_m2, max_speed=TURN_COEFF)
                         except Exception as exc:
-                            print(f"{get_time()}-M2 position set error: {exc}")
+                            print(f"{get_time()}-M2位置命令错误: {exc}")
                             if self.voice_window:
                                 self.voice_window.push_log(f"M2 position set error: {exc}")
 
-                        # 立即尝试读取电机实际位置（用于判断位置是否发生了变化）
-                        cur_pos = None
-                        try:
-                            self.motors.m2.update_state()
-                            cur_pos = float(self.motors.m2.position)
-                        except Exception as exc_up:
-                            print(f"{get_time()}-M2 manual update_state failed: {exc_up}")
-                            if self.voice_window:
-                                self.voice_window.push_log(f"M2 manual update_state failed: {exc_up}")
-
-                        # 如果位置没有实际变化（或读取失败），使用短速脉冲作为后备（fallback）
-                        try:
-                            prev_pos = filtered_prev
-                            moved_threshold = max(self.m2_deadband_deg, 0.05)
-                            if cur_pos is None or (prev_pos is not None and abs(cur_pos - prev_pos) < moved_threshold):
-                                direction = 1.0 if (new_m2 - prev_pos) >= 0 else -1.0
-                                test_speed = getattr(self, "vision_fallback_speed", 4.0) * direction
-                                try:
-                                    # 发送短时速度脉冲（点动），然后停下，再读取位置
-                                    self.motors.map_vertical(test_speed)
-                                    time.sleep(0.12)
-                                    self.motors.map_vertical(0.0)
-                                    self.motors.m2.update_state()
-                                    pos_after = float(self.motors.m2.position)
-                                except Exception as exc_fb:
-                                    print(f"{get_time()}-M2 manual fallback failed: {exc_fb}")
-                                    if self.voice_window:
-                                        self.voice_window.push_log(f"M2 manual fallback failed: {exc_fb}")
-                        except Exception:
-                            # 忽略回退逻辑中的所有异常，避免影响主循环
-                            pass
+            except Exception as exc:
+                print(f"{get_time()}-M2执行异常: {exc}")
         except (ValueError, Exception) as exc:
             error_msg = f"手动控制执行异常：{exc}"
             print(f"{get_time()}-{error_msg}")
