@@ -19,11 +19,13 @@ from config import update_config
 from config import get_config
 
 # BC 视觉特征注入（非侵入式，导入失败不影响正常运行）
+# 必须与主程序使用相同的模块路径 BC.data_collector，否则两个线程
+# 分别持有独立的 _visual_features 字典，写入和读取不共享同一对象。
 try:
-    _bc_dir = os.path.join(os.path.dirname(__file__), "BC")
-    if _bc_dir not in sys.path:
-        sys.path.insert(0, _bc_dir)
-    from data_collector import update_visual_features as _bc_update_vis
+    _2026_dir = os.path.dirname(os.path.abspath(__file__))
+    if _2026_dir not in sys.path:
+        sys.path.insert(0, _2026_dir)
+    from BC.data_collector import update_visual_features as _bc_update_vis
     _BC_VIS_AVAILABLE = True
 except Exception as _bc_e:
     _bc_update_vis = None
@@ -995,19 +997,20 @@ class UnetPackage:
                     _s_cy   = (cy - center_y) / _h2 if stone_has_target else 0.0
                     _s_area = min(max_area / (w * h), 1.0) if stone_has_target else 0.0
 
-                    # ── 岔口特征 ─────────────────────────────────────────
-                    _b_cx = (l_cx - center_x) / _w2 if l_cx is not None else 0.0
-                    _b_cy = (l_cy - center_y) / _h2 if l_cy is not None else 0.0
-                    _b_area = 0.0
-                    if cav_sorted and len(cav_sorted) > 0:
-                        _b_area = min(cav_sorted[0].get('area', 0) / max(w * h, 1), 1.0)
+                    # ── 岔口特征（始终取最大腔道，与 _cav_highlight_idx UI 状态无关）
+                    _b_cx = _b_cy = _b_area = 0.0
+                    if cav_sorted:
+                        _best   = cav_sorted[0]
+                        _b_cx   = (_best['cx'] - center_x) / _w2
+                        _b_cy   = (_best['cy'] - center_y) / _h2
+                        _b_area = min(_best.get('area', 0) / max(w * h, 1), 1.0)
 
-                    # ── 深度特征（来自 depth_m，单位 m → mm）────────────
+                    # ── 深度特征（来自 depth_m，单位 m → mm，含 depth_scale 标定）
                     _dc_mm = _dm_mm = _dmax_mm = 0.0
                     _pl_mm = _pc_mm = _pr_mm   = 0.0
 
                     if depth_m is not None:
-                        _dmm = depth_m * 1000.0   # 全图深度，mm
+                        _dmm = depth_m * 1000.0 * self.depth_scale   # 全图深度，标定后 mm
 
                         # 圆形 ROI 内的有效像素
                         _valid = _dmm[self.circle_mask > 0]

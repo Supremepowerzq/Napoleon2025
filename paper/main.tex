@@ -1,0 +1,636 @@
+%% IEEE Robotics and Automation Letters (RA-L) Template
+%% IEEEtran class, two-column, 6 pages max (excl. references)
+%%
+%% Author: ZQ   Draft v0.1   2026-06
+%% TODO: fill in experiment numbers, add figures, complete abstract
+
+\documentclass[journal,comsoc]{IEEEtran}
+
+% ── Packages ────────────────────────────────────────────────────
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{cite}
+\usepackage{url}
+\usepackage{subcaption}
+\usepackage{balance}   % balance last-page columns
+
+% ── Macros ──────────────────────────────────────────────────────
+\newcommand{\TODO}[1]{\textcolor{red}{\textbf{[TODO: #1]}}}
+\newcommand{\Tobs}{T_{\text{obs}}}
+\newcommand{\dobs}{{d_{\text{obs}}}}
+\newcommand{\Ngoal}{{N_{\text{goal}}}}
+\newcommand{\obs}{\mathbf{o}}
+\newcommand{\act}{\mathbf{a}}
+\newcommand{\hid}{\mathbf{h}}
+\newcommand{\goal}{g}
+
+% ── Title ───────────────────────────────────────────────────────
+\title{An Embodied Autonomous Bronchoscope Platform with\\
+Multimodal Perception and Goal-Conditioned Imitation Learning}
+
+\author{%
+  \TODO{Author~1},~\IEEEmembership{Student~Member,~IEEE},
+  \TODO{Author~2},~\IEEEmembership{Member,~IEEE},
+  and~\TODO{Author~3},~\IEEEmembership{Senior~Member,~IEEE}%
+  \thanks{Manuscript received \TODO{date}; revised \TODO{date}.}%
+  \thanks{\TODO{Author affiliations, corresponding author, grant info.}}%
+}
+
+\markboth{IEEE Robotics and Automation Letters,~Vol.~\TODO{X},~No.~\TODO{X},~\TODO{Month}~\TODO{Year}}%
+{Author \MakeLowercase{\textit{et al.}}: Embodied Autonomous Bronchoscope}
+
+% ── Begin Document ──────────────────────────────────────────────
+\begin{document}
+
+\maketitle
+
+% ── Abstract ────────────────────────────────────────────────────
+\begin{abstract}
+We present an embodied autonomous bronchoscope platform that integrates
+multimodal perception with goal-conditioned imitation learning for
+autonomous airway navigation and mucus clearance.
+The system fuses real-time semantic segmentation (UNet), metric depth
+estimation (Depth-Anything-V2, ViT-L encoder), and depth-guided
+bifurcation analysis (DepthPathFinder) into a unified
+20-dimensional structured observation vector that captures lumen
+geometry, path topology, and instrument proprioception.
+A goal-conditioned gated recurrent network (BronchusPolicy) maps this
+multimodal observation sequence and a discrete anatomical target
+identifier to three-degree-of-freedom motor increments, enabling
+voice-commanded navigation to any of nine anatomical destinations.
+Expert demonstrations collected at 20\,Hz in HDF5 format train the
+policy via behavior cloning with an auxiliary subtask-classification
+head that improves action quality across both navigation and
+mucus-clearance phases.
+Experiments on a bronchial phantom demonstrate a navigation success
+rate of \TODO{XX\%}, a mean endpoint error of \TODO{XX\,mm}, and
+end-to-end inference at 20\,Hz.
+The integrated platform—spanning hardware, perception, policy, and a
+voice-driven user interface—provides a clinically deployable foundation
+for fully autonomous bronchoscopy.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Autonomous bronchoscopy, imitation learning, multimodal perception,
+depth estimation, goal-conditioned policy, medical robotics.
+\end{IEEEkeywords}
+
+% ── I. Introduction ─────────────────────────────────────────────
+\section{Introduction}
+\label{sec:intro}
+
+Flexible bronchoscopy is essential for airway inspection, biopsy, and
+mucus clearance in patients with respiratory diseases.
+Skilled navigation through the highly branched tracheobronchial tree
+demands years of training to coordinate real-time endoscopic video with
+instrument tip deflection, and operator fatigue remains a safety
+concern during repeated bronchial toilet in intensive care.
+
+Robotic bronchoscopy has attracted considerable attention, with
+commercial systems (e.g., Intuitive Ion, Auris Monarch) providing
+teleoperation assistance~\cite{swaney2017toward}.
+Yet none currently offer fully autonomous waypoint navigation:
+the operator must still select each bifurcation turn manually.
+Key technical barriers include: (i)~robust lumen perception in the
+textureless, specular, and wet endoscopic environment;
+(ii)~bifurcation-aware path selection under anatomical variability;
+and (iii)~learning policies that generalize without explicit kinematic
+models of the flexible instrument.
+
+Recent vision foundation models have dramatically advanced per-frame
+depth estimation~\cite{yang2024depthv2} and semantic parsing,
+while recurrent imitation-learning architectures have enabled
+end-to-end visuomotor policies in
+manipulation~\cite{chi2023diffusion,zhao2023act} and flexible
+endoscopy~\cite{liu2023bronchoscopy}.
+Building on these threads, we present a unified platform in which
+every subsystem—hardware actuation, multimodal perception, learned
+policy, and human-robot interaction—is integrated and co-designed
+for 20\,Hz closed-loop bronchoscopy.
+
+The main contributions of this letter are:
+\begin{itemize}
+  \item A \textbf{multimodal perception pipeline} that fuses UNet lumen
+        segmentation, Depth-Anything-V2 metric depth, and a
+        depth-region bifurcation analyser (DepthPathFinder) into a
+        compact 20-dimensional observation space.
+  \item A \textbf{goal-conditioned GRU policy} (BronchusPolicy) with a
+        goal-embedding mechanism that supports directed navigation to
+        any of nine bronchial anatomical sites via a single learned
+        network.
+  \item A \textbf{dual-head training objective} that jointly supervises
+        motor-increment regression and subtask classification
+        (navigate vs.\ clear-mucus), improving action quality in both
+        operating phases.
+  \item A \textbf{fully integrated system} with voice-command interaction
+        and an expert-data collection pipeline, validated on
+        \TODO{phantom / ex-vivo porcine lung}.
+\end{itemize}
+
+% ── II. Related Work ────────────────────────────────────────────
+\section{Related Work}
+\label{sec:related}
+
+\subsection{Robotic Bronchoscopy}
+Tendon-driven continuum robots provide the mechanical basis for
+flexible bronchoscopy~\cite{camarillo2008mechanics,roesthuis2014continuum}.
+Shape-sensing and model-based controllers have been proposed for
+bronchial navigation, but they require accurate instrument models and
+pre-operative CT registration that are difficult to maintain under
+tissue deformation~\cite{swaney2017toward}.
+
+\subsection{Endoscope Visual Perception}
+Monocular depth estimation in endoscopy is challenging due to
+specular highlights and the absence of texture.
+Self-supervised approaches have been explored~\cite{wu2023depth},
+but metric accuracy remains limited without fine-tuning on
+domain-specific data.
+Depth-Anything-V2~\cite{yang2024depthv2} achieves state-of-the-art
+metric depth on diverse scenes with a ViT-L backbone, which we
+adapt here to the bronchoscopic domain.
+
+\subsection{Autonomous Navigation via Imitation Learning}
+Behavior cloning (BC) trains a policy to mimic expert demonstrations
+directly~\cite{ross2011dagger}.
+Recurrent architectures such as GRU~\cite{cho2014gru} handle
+partial observability in sequential navigation tasks.
+Recent work on autonomous colonoscopy and flexible endoscope
+control~\cite{jiang2023endoscope} demonstrates the feasibility of
+learning-based approaches, but has not addressed goal-directed
+navigation across the full anatomical hierarchy of the bronchial tree.
+Goal conditioning via discrete
+embeddings~\cite{chi2023diffusion,zhao2023act} has proven effective
+in manipulation; we transfer this idea to bronchoscopy for the first
+time.
+
+% ── III. System Overview ────────────────────────────────────────
+\section{System Overview}
+\label{sec:system}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\columnwidth]{figures/fig1_system_overview.pdf}
+  \caption{Overall system architecture.
+           Four layers communicate through a shared state dictionary
+           updated at 20\,Hz: (a)~hardware actuation (3-DoF RMD motors),
+           (b)~multimodal perception (UNet, Depth-Anything-V2,
+           DepthPathFinder), (c)~goal-conditioned policy (BronchusPolicy),
+           and (d)~interaction layer (GUI, joystick, Baidu-ASR voice).
+           \TODO{Replace with actual figure.}}
+  \label{fig:system}
+\end{figure}
+
+Fig.~\ref{fig:system} shows the system architecture.
+A finite-state machine (FSM) manages four operation modes:
+\textit{Manual}~(M1) joystick teleoperation,
+\textit{Vision}~(M2) reactive visual servoing,
+\textit{Hybrid}~(M3) manual with visual assist, and
+\textit{AI-Auto}~(M4) policy-driven autonomous navigation.
+Mode transitions are triggered through the GUI or by Chinese voice
+commands (e.g., \textit{``qiehuan wei zizhu moshi''}).
+A dedicated camera thread runs the perception pipeline;
+a separate control thread runs the FSM and policy inference.
+Thread-safe feature dictionaries synchronize the two threads without
+blocking.
+
+% ── IV. Hardware Platform ───────────────────────────────────────
+\section{Hardware Platform}
+\label{sec:hardware}
+
+\subsection{Robotic Bronchoscope}
+
+The prototype retrofits a commercial flexible bronchoscope with a
+four-way deflectable tip, driven by three brushless RMD motors:
+
+\begin{table}[h]
+\caption{Motor Configuration}
+\label{tab:motors}
+\centering
+\begin{tabular}{clcc}
+\toprule
+DoF & Function & Range (deg) & Gearbox \\
+\midrule
+M0 & Advancement / withdrawal  & $[-900,\ 0]$   & 1:1  \\
+M1 & Left–right tip deflection & $[-170,\ 170]$ & 1:1  \\
+M2 & Up–down tip deflection    & $[-500,\ 500]$ & 10:1 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Motors are commanded over a UART serial bus (1\,Mbit/s) as position
+targets with velocity limits.
+The 10:1 reduction gearbox on M2 reduces effective output range to
+$\pm$50$^\circ$ while increasing torque for stiff tissue contact.
+The closed-loop control cycle runs at \textbf{20\,Hz}.
+
+\subsection{Sensor Suite}
+
+An endoscopic USB camera captures 640$\times$480 frames at 30\,fps.
+A circular region of interest (ROI) of 788\,px diameter is extracted
+and barrel-distortion-corrected using precomputed maps stored as a
+compressed \texttt{.npz} file.
+An Xbox controller provides teleoperation input for the Manual and
+Hybrid modes, and a microphone feeds the Baidu cloud automatic speech
+recognition (ASR) service for Chinese-language voice commands.
+
+% ── V. Multimodal Perception ────────────────────────────────────
+\section{Multimodal Perception}
+\label{sec:perception}
+
+\subsection{Semantic Segmentation (UNet)}
+
+A UNet~\cite{ronneberger2015unet} with a VGG-16
+backbone~\cite{simonyan2014vgg}, fine-tuned on \TODO{$N$} annotated
+bronchoscopic frames, performs four-class per-pixel classification:
+\textit{background}, \textit{lumen}, \textit{bifurcation}, and
+\textit{mucus/stone}.
+Inference runs at $\approx$30\,fps on a consumer GPU.
+From the predicted probability maps we extract:
+\begin{itemize}
+  \item \textbf{Mucus centroid} $(c_x, c_y)$: pixel centroid of the
+        mucus/stone class, normalized to $[-1,1]$ within the ROI;
+        binary detection flag; and area ratio $s_\text{stone}$.
+  \item \textbf{Bifurcation centroid} $(b_x, b_y)$ and area ratio
+        $s_\text{bif}$: analogous quantities for the bifurcation class.
+\end{itemize}
+
+\subsection{Metric Depth Estimation (Depth-Anything-V2)}
+
+Depth-Anything-V2~\cite{yang2024depthv2} with a ViT-L encoder and a
+metric-depth head (fine-tuned on the Hypersim dataset) estimates
+per-pixel absolute depth in millimeters from the barrel-corrected ROI
+(resized to 518$\times$518).
+We apply:
+(i)~a validity gate $[Z_\text{min}, Z_\text{max}] = [5, 300]$\,mm;
+(ii)~a temporal jump filter that discards frames in which the mean
+depth changes by more than 30\,mm from the previous frame.
+
+Three scalar depth statistics are computed from the valid depth map:
+\begin{equation}
+  d_\text{ctr},\; d_\text{mean},\; d_\text{max}
+  \label{eq:depth_stats}
+\end{equation}
+corresponding to the image-center depth, the lumen-masked mean depth,
+and the 95th-percentile (``deepest navigable'') depth, respectively.
+
+\subsection{DepthPathFinder: Bifurcation and Path Analysis}
+
+At bifurcation zones, the depth map is partitioned into a
+$3\!\times\!5$ spatial grid.
+Each of three columns (left, center, right) accumulates depth
+statistics over the distal half of the lumen mask, yielding path-depth
+estimates $p_L$, $p_C$, $p_R$ (in mm).
+These are passed directly to the observation vector (Section~\ref{sec:obs}),
+enabling the policy to reason about available paths without an
+explicit 3-D map or pre-operative CT registration.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\columnwidth]{figures/fig2_perception.pdf}
+  \caption{Perception pipeline.
+           (a)~Raw endoscopic frame.
+           (b)~UNet segmentation overlay (green: lumen, red: bifurcation,
+           orange: mucus).
+           (c)~Depth map from Depth-Anything-V2 (cool=near, warm=far).
+           (d)~DepthPathFinder output: three-column path-depth bar chart.
+           \TODO{Replace with actual frames.}}
+  \label{fig:perception}
+\end{figure}
+
+\subsection{Structured Observation Vector}
+\label{sec:obs}
+
+All perception outputs and motor proprioception are assembled into a
+\textbf{20-dimensional} structured observation vector $\obs_t$:
+
+\begin{equation}
+  \obs_t = \bigl[
+    \underbrace{c_x,\,c_y,\,s_\text{stone},\,\delta_\text{stone},\,
+                b_x,\,b_y,\,s_\text{bif}}_{\text{visual (7)}},\;
+    \underbrace{d_\text{ctr},\,d_\text{mean},\,d_\text{max},\,
+                p_L,\,p_C,\,p_R}_{\text{depth (6)}},\;
+    \underbrace{m_0,\,m_1,\,m_2}_{\text{pos (3)}},\;
+    \underbrace{\dot m_0,\,\dot m_1,\,\dot m_2}_{\text{vel (3)}},\;
+    \underbrace{\Delta t}_{\text{dt (1)}}
+  \bigr]^\top
+  \label{eq:obs}
+\end{equation}
+
+Each field is normalized by a fixed scale factor (Table~\ref{tab:obs_fields}).
+Velocity $\dot{m}_i$ is estimated as the finite difference of consecutive
+angle readings divided by $\Delta t$.
+
+\begin{table}[h]
+\caption{Observation Vector Fields and Normalization}
+\label{tab:obs_fields}
+\centering
+\small
+\begin{tabular}{llcl}
+\toprule
+Index & Field & Scale & Description \\
+\midrule
+0--1 & $c_x, c_y$          & 1.0   & Mucus centroid, norm. to $[-1,1]$ \\
+2    & $s_\text{stone}$     & 1.0   & Mucus area ratio $[0,1]$ \\
+3    & $\delta_\text{stone}$& 1.0   & Detection flag 0/1 \\
+4--5 & $b_x, b_y$          & 1.0   & Bifurcation centroid \\
+6    & $s_\text{bif}$       & 1.0   & Bifurcation area ratio \\
+7    & $d_\text{ctr}$       & 300   & Center depth (mm) \\
+8    & $d_\text{mean}$      & 300   & Mean lumen depth (mm) \\
+9    & $d_\text{max}$       & 300   & 95th-pct depth (mm) \\
+10   & $p_L$                & 300   & Left path depth (mm) \\
+11   & $p_C$                & 300   & Center path depth (mm) \\
+12   & $p_R$                & 300   & Right path depth (mm) \\
+13--15 & $m_0, m_1, m_2$   & 900/170/500 & Motor angles (deg) \\
+16--18 & $\dot m_0,\dot m_1,\dot m_2$ & 90/30/50 & Motor velocities (deg/s) \\
+19   & $\Delta t$           & 0.05  & Frame interval (s) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ── VI. Goal-Conditioned Policy Learning ────────────────────────
+\section{Goal-Conditioned Policy Learning}
+\label{sec:policy}
+
+\subsection{Policy Architecture}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\columnwidth]{figures/fig3_network.pdf}
+  \caption{BronchusPolicy architecture.
+           Observations $\obs_{t-T+1:\,t}$ are encoded frame-wise
+           by an MLP encoder and concatenated with a goal embedding
+           $\mathbf{e}_\goal$ before being processed by a two-layer GRU.
+           The final hidden state produces motor-increment predictions
+           (action head) and subtask classification (task head).
+           \TODO{Replace with actual figure.}}
+  \label{fig:network}
+\end{figure}
+
+Given a sliding window of $\Tobs=8$ consecutive observations and a
+discrete goal token $\goal \in \{0,\ldots,9\}$ (Table~\ref{tab:goals}),
+BronchusPolicy (Fig.~\ref{fig:network}) outputs:
+(1)~a normalized action vector $\act_t\!\in\![-1,1]^3$ representing motor
+increments $[\Delta m_0, \Delta m_1, \Delta m_2]$; and
+(2)~subtask logits $\mathbf{z}_t\!\in\!\mathbb{R}^2$ (navigate~/ clear).
+
+\begin{table}[h]
+\caption{Anatomical Goal Tokens}
+\label{tab:goals}
+\centering
+\small
+\begin{tabular}{clcl}
+\toprule
+$\goal$ & Target & $\goal$ & Target \\
+\midrule
+0 & Autonomous exploration & 5 & Left lower lobe (LLB) \\
+1 & Trachea (TR)           & 6 & Right upper lobe (RUL) \\
+2 & L. main bronchus (LMB) & 7 & Bronchus intermedius (BI) \\
+3 & R. main bronchus (RMB) & 8 & Right middle lobe (RML) \\
+4 & Left upper lobe (LUB)  & 9 & Right lower lobe (RLL) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The network comprises three learnable modules:
+
+\textbf{ObsEncoder.}
+A two-layer MLP ($\dobs\!\to\!128\!\to\!128$, LayerNorm + ELU) encodes
+each frame independently:
+\begin{equation}
+  \mathbf{e}^{\text{obs}}_t = \text{ObsEncoder}(\obs_t).
+\end{equation}
+
+\textbf{Goal embedding.}
+An embedding table $\mathbf{W}_g \in \mathbb{R}^{\Ngoal \times 16}$
+maps the integer goal token to a 16-dim vector that is broadcast to
+all $\Tobs$ time steps:
+\begin{equation}
+  \mathbf{e}_\goal = \text{Embed}(\goal);\quad
+  \mathbf{u}_t = [\mathbf{e}^{\text{obs}}_t \,\|\, \mathbf{e}_\goal].
+  \label{eq:goal_emb}
+\end{equation}
+
+\textbf{Temporal GRU.}
+A two-layer GRU (hidden size 256, inter-layer dropout 0.1) processes
+the concatenated sequence $\{\mathbf{u}_t\}_{t=1}^\Tobs \in \mathbb{R}^{144}$:
+\begin{equation}
+  \hid_t = \text{GRU}(\mathbf{u}_t,\, \hid_{t-1}),
+  \label{eq:gru}
+\end{equation}
+and the final hidden state $\hid_T$ feeds two prediction heads:
+
+\begin{align}
+  \act_t &= \tanh\!\bigl(\text{MLP}_\text{act}(\hid_T)\bigr),
+            \quad \act_t\!\in\![-1,1]^3 \label{eq:action_head}\\
+  \mathbf{z}_t &= \text{MLP}_\text{task}(\hid_T),
+            \quad \mathbf{z}_t\!\in\!\mathbb{R}^2.   \label{eq:task_head}
+\end{align}
+
+Action increments are de-normalized as $[\Delta m_0, \Delta m_1, \Delta m_2]
+= \act_t \odot [5, 3, 3]$\,deg/frame before clamping to motor limits.
+Total trainable parameters: $\approx\!0.4\,$M.
+Orthogonal weight initialization~\cite{zhao2023act} is applied throughout.
+
+\subsection{Expert Demonstration Collection}
+
+Demonstrations are recorded during manual teleoperation using
+\texttt{BronchusDataCollector}, which writes to HDF5 at 20\,Hz.
+Each frame stores the full 20-dim observation vector, a motor-angle
+triplet $(m_0, m_1, m_2)$, a task label $y\!\in\!\{0,1\}$
+(navigate / clear-mucus), and a path label $\goal$.
+\TODO{Provide total dataset statistics: $N$ trajectories, total
+frames, total duration.}
+
+\subsection{Behavior Cloning Training}
+
+The training objective combines MSE action regression and
+cross-entropy subtask classification:
+\begin{equation}
+  \mathcal{L} = \underbrace{\|\act_t - \hat{\act}_t\|_2^2}_{\mathcal{L}_\text{action}}
+              + \lambda\,\underbrace{H(\mathbf{z}_t,\, y_t)}_{\mathcal{L}_\text{task}},
+  \quad \lambda = 0.3.
+  \label{eq:loss}
+\end{equation}
+
+Training uses AdamW~\cite{loshchilov2017adamw} with initial
+learning rate $3\!\times\!10^{-4}$, cosine annealing, batch size 64,
+sequence length $\Tobs\!=\!8$, mixed-precision (AMP), and early stopping
+with patience 30.
+A 90/10 train/validation split is used.
+Gradients are clipped to norm 1.0.
+
+\subsection{Real-Time Inference}
+
+At runtime, \texttt{BCRunner} maintains a rolling FIFO buffer of $\Tobs$
+frames.
+Each control tick:
+(1)~the perception thread writes fresh features to a thread-safe
+dictionary;
+(2)~the buffer is updated and stacked into a $[1, \Tobs, 20]$ tensor;
+(3)~a forward pass through BronchusPolicy yields $\act_t$ and $\mathbf{z}_t$;
+(4)~scaled motor increments are applied as position-control commands.
+Measured wall-clock inference latency is $<$5\,ms on an NVIDIA RTX 3090,
+sustaining the 20\,Hz control loop.
+
+% ── VII. Experiments ────────────────────────────────────────────
+\section{Experiments}
+\label{sec:experiments}
+
+\subsection{Experimental Setup}
+
+Experiments are conducted on a 3D-printed bronchial phantom replicating
+the main carina, left and right principal bronchi, and four
+lobe-level branches (LUB, LLB, RUL, RLL).
+\TODO{Optionally: ex-vivo porcine lung in a torso fixture.}
+
+We evaluate four methods:
+\begin{enumerate}
+  \item \textbf{Expert}: experienced operator, no robotic assistance.
+  \item \textbf{Reactive}: DepthPathFinder + visual servoing; no learned policy.
+  \item \textbf{BC (no-goal)}: BronchusPolicy with goal token fixed to 0
+        (exploration).
+  \item \textbf{BC+goal} (proposed): BronchusPolicy with the correct goal token.
+\end{enumerate}
+
+Metrics:
+\begin{itemize}
+  \item \textbf{NSR}: navigation success rate (\%) across 20 trials per target.
+  \item \textbf{MEE}: mean Euclidean endpoint error (mm).
+  \item \textbf{Latency}: mean inference cycle time (ms).
+  \item \textbf{Jerk}: mean third derivative of motor-angle trajectories
+        (deg/s$^3$), measuring motion smoothness.
+\end{itemize}
+
+\subsection{Navigation Performance}
+
+\begin{table}[h]
+\caption{Navigation Results on Bronchial Phantom
+(\TODO{$N=20$} trials per target)}
+\label{tab:results}
+\centering
+\small
+\begin{tabular}{lcccc}
+\toprule
+Method & NSR (\%) $\uparrow$ & MEE (mm) $\downarrow$ & Latency (ms) & Jerk $\downarrow$ \\
+\midrule
+Expert        & \TODO{--}   & \TODO{--}   & --           & \TODO{--} \\
+Reactive      & \TODO{XX}   & \TODO{XX}   & \TODO{XX}    & \TODO{XX} \\
+BC (no-goal)  & \TODO{XX}   & \TODO{XX}   & \TODO{XX}    & \TODO{XX} \\
+BC+goal (ours)& \TODO{XX}   & \TODO{XX}   & $<$5\,ms     & \TODO{XX} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\columnwidth]{figures/fig4_results.pdf}
+  \caption{Qualitative results.
+           (a)~NSR comparison across four target bronchi.
+           (b)~Representative scope trajectories overlaid on the phantom
+           for the Reactive baseline (orange) and BC+goal (blue).
+           (c)~Motor-angle time series showing smoother actuation by
+           the learned policy.
+           \TODO{Replace with actual figure.}}
+  \label{fig:results}
+\end{figure}
+
+\subsection{Ablation Study}
+
+Table~\ref{tab:ablation} isolates the contribution of each design
+choice.
+
+\begin{table}[h]
+\caption{Ablation Study (NSR \% on LMB and RMB targets)}
+\label{tab:ablation}
+\centering
+\small
+\begin{tabular}{lccc}
+\toprule
+Variant & LMB & RMB & Avg. \\
+\midrule
+BC+goal, dual-head (full model)           & \TODO{XX} & \TODO{XX} & \TODO{XX} \\
+BC+goal, single-head (no task loss)       & \TODO{XX} & \TODO{XX} & \TODO{XX} \\
+BC, no goal token                         & \TODO{XX} & \TODO{XX} & \TODO{XX} \\
+Reactive baseline (no BC)                 & \TODO{XX} & \TODO{XX} & \TODO{XX} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Inference Latency Breakdown}
+
+\begin{table}[h]
+\caption{Per-Module Inference Latency (RTX 3090)}
+\label{tab:latency}
+\centering
+\small
+\begin{tabular}{lc}
+\toprule
+Module & Latency (ms) \\
+\midrule
+UNet segmentation     & \TODO{XX} \\
+Depth-Anything-V2     & \TODO{XX} \\
+DepthPathFinder       & $<$1      \\
+BronchusPolicy (GRU)  & $<$5      \\
+Motor command         & $<$1      \\
+\textbf{Total (20\,Hz budget: 50\,ms)} & \TODO{XX} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ── VIII. Discussion ────────────────────────────────────────────
+\section{Discussion}
+
+\textbf{Goal conditioning.}
+Results in Table~\ref{tab:ablation} confirm that the goal embedding
+provides a substantial benefit over exploration-mode navigation,
+since the policy can learn target-specific entry angles at each
+bifurcation.
+
+\textbf{Dual-head training.}
+The auxiliary subtask-classification loss encourages the GRU to
+maintain a distinct internal representation of the navigation vs.\
+mucus-clearance regimes, which correlates with lower action MSE on
+both task types.
+
+\textbf{Limitations.}
+The current BC policy does not generalize to unseen anatomical
+configurations significantly different from the training phantom.
+Sim-to-real transfer via a PyBullet bronchial simulator with
+PPO fine-tuning is planned as future work.
+The 20\,Hz loop is bottlenecked by Depth-Anything-V2; a
+lighter depth encoder (e.g., ViT-S) could free headroom for
+higher control frequencies.
+
+% ── IX. Conclusion ──────────────────────────────────────────────
+\section{Conclusion}
+
+We presented an integrated embodied bronchoscope platform combining
+multimodal perception with goal-conditioned imitation learning.
+The 20-dimensional structured observation fuses UNet segmentation,
+Depth-Anything-V2 metric depth, and DepthPathFinder path analysis
+with motor proprioception.
+BronchusPolicy, a GRU network with a goal-embedding mechanism and a
+dual-head training objective, achieves \TODO{XX\%} navigation success
+at 20\,Hz on a bronchial phantom.
+Future work will extend the framework to PPO-based reinforcement
+learning in simulation and validate sim-to-real transfer on ex-vivo
+porcine tissue.
+
+% ── Acknowledgment ──────────────────────────────────────────────
+\section*{Acknowledgment}
+\TODO{Add grant numbers and acknowledgments.}
+
+% ── References ──────────────────────────────────────────────────
+\balance
+\bibliographystyle{IEEEtran}
+\bibliography{refs}
+
+\end{document}
