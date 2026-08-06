@@ -63,7 +63,7 @@ class BCDecision:
     new_m2:     float
     # 当前子任务
     task:       int           # TASK_NAVIGATE=0 or TASK_CLEAR=1
-    task_name:  str           # "navigate" / "clear_stone"
+    task_name:  str           # "navigate" / "clear_obstruction"
     # 置信度
     task_prob:  float         # softmax 概率
     # 调试信息
@@ -78,7 +78,7 @@ class BCDecision:
 MOTOR_LIMITS = {
     0: (-900.0, 0.0),
     1: (-170.0, 170.0),
-    2: (-500.0, 500.0),
+    2: (-600.0, 600.0),
 }
 
 # 单步最大角度变化量（安全保护）
@@ -175,10 +175,10 @@ class BCRunner:
             # 2. 读取视觉特征
             vis = get_visual_features()
             obs = obs_from_config_and_motors(
-                stone_cx        = vis.get("stone_cx",        0.0),
-                stone_cy        = vis.get("stone_cy",        0.0),
-                stone_area      = vis.get("stone_area",      0.0),
-                stone_detected  = bool(vis.get("stone_detected", False)),
+                obstruction_cx       = vis.get("obstruction_cx",       0.0),
+                obstruction_cy       = vis.get("obstruction_cy",       0.0),
+                obstruction_area     = vis.get("obstruction_area",     0.0),
+                obstruction_detected = bool(vis.get("obstruction_detected", False)),
                 bifur_cx        = vis.get("bifur_cx",        0.0),
                 bifur_cy        = vis.get("bifur_cy",        0.0),
                 bifur_area      = vis.get("bifur_area",      0.0),
@@ -245,7 +245,7 @@ class BCRunner:
                 new_m1    = new_m1,
                 new_m2    = new_m2,
                 task      = task,
-                task_name = "clear_stone" if task == TASK_CLEAR else "navigate",
+                task_name = "clear_obstruction" if task == TASK_CLEAR else "navigate",
                 task_prob = task_prob,
                 raw_action = raw,
                 goal_id    = self.goal_id,
@@ -285,7 +285,7 @@ class BCRunner:
 
     @property
     def current_task_name(self) -> str:
-        return "clear_stone" if self._last_task == TASK_CLEAR else "navigate"
+        return "clear_obstruction" if self._last_task == TASK_CLEAR else "navigate"
 
     @property
     def step_count(self) -> int:

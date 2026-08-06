@@ -24,10 +24,10 @@ from typing import Optional, Tuple
 # 前16维：视觉+位置；后4维：速度+时间步长
 OBS_FIELDS = [
     # ── 视觉特征（来自 UNet/HSV + DepthAnythingV2）─────────────
-    ("stone_cx",         1.0,    "结石质心 x，已归一化到 [-1,1]"),
-    ("stone_cy",         1.0,    "结石质心 y，已归一化到 [-1,1]"),
-    ("stone_area",       1.0,    "结石像素面积占比 [0,1]"),
-    ("stone_detected",   1.0,    "是否检测到结石 0/1"),
+    ("obstruction_cx",       1.0,    "阻塞物质心 x，已归一化到 [-1,1]"),
+    ("obstruction_cy",       1.0,    "阻塞物质心 y，已归一化到 [-1,1]"),
+    ("obstruction_area",     1.0,    "阻塞物像素面积占比 [0,1]"),
+    ("obstruction_detected", 1.0,    "是否检测到阻塞物 0/1"),
     ("bifur_cx",         1.0,    "岔口质心 x 归一化"),
     ("bifur_cy",         1.0,    "岔口质心 y 归一化"),
     ("bifur_area",       1.0,    "岔口面积占比 [0,1]"),
@@ -47,7 +47,7 @@ OBS_FIELDS = [
     ("m1_vel",           30.0,   "M1 速度 °/s → /30"),
     ("m2_vel",           50.0,   "M2 速度 °/s → /50"),
     # ── 时间步长（帧间隔）────────────────────────────────────
-    # 录制暂停、手柄操作停顿时 dt 会变大；推理时也可能帧率波动
+    # 采集暂停、手柄操作停顿时 dt 会变大；推理时也可能帧率波动
     # 归一化：dt / 0.05（20Hz 对应 1.0；10Hz 对应 2.0）
     ("dt",               0.05,   "帧间隔 s → /0.05（20Hz=1.0）"),
 ]
@@ -88,7 +88,7 @@ def path_idx(code_or_idx) -> int:
 
 # 子任务标签
 TASK_NAVIGATE = 0   # 导航前进
-TASK_CLEAR     = 1  # 清理结石/黏液
+TASK_CLEAR     = 1  # 清理阻塞物
 
 
 # ──────────────────────────────────────────────────────────────
@@ -117,7 +117,7 @@ def build_obs_vector(features: dict) -> torch.Tensor:
 
 
 def obs_from_config_and_motors(
-    stone_cx: float, stone_cy: float, stone_area: float, stone_detected: bool,
+    obstruction_cx: float, obstruction_cy: float, obstruction_area: float, obstruction_detected: bool,
     bifur_cx: float, bifur_cy: float, bifur_area: float,
     depth_center_mm: float, depth_mean_mm: float, depth_max_mm: float,
     path_depths: tuple,       # (left, center, right) mm
@@ -127,10 +127,10 @@ def obs_from_config_and_motors(
 ) -> torch.Tensor:
     """快捷构建函数，直接从现有系统变量构建 20 维观测向量。"""
     feat = {
-        "stone_cx": stone_cx,
-        "stone_cy": stone_cy,
-        "stone_area": stone_area,
-        "stone_detected": float(stone_detected),
+        "obstruction_cx": obstruction_cx,
+        "obstruction_cy": obstruction_cy,
+        "obstruction_area": obstruction_area,
+        "obstruction_detected": float(obstruction_detected),
         "bifur_cx": bifur_cx,
         "bifur_cy": bifur_cy,
         "bifur_area": bifur_area,
@@ -226,7 +226,7 @@ class BronchusPolicy(nn.Module):
             nn.Tanh(),
         )
 
-        # 子任务分类头（导航 vs 清理结石）
+        # 子任务分类头（导航 vs 清理阻塞物）
         self.task_head = nn.Sequential(
             nn.Linear(gru_hidden, 64),
             nn.ELU(),

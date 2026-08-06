@@ -12,7 +12,7 @@
 - [快速开始](#快速开始)
 - [详细操作说明](#详细操作说明)
   - [Step 1 安装依赖](#step-1-安装依赖)
-  - [Step 2 录制专家演示](#step-2-录制专家演示)
+  - [Step 2 采集专家演示](#step-2-采集专家演示)
   - [Step 3 训练模型](#step-3-训练模型)
   - [Step 4 验证推理](#step-4-验证推理)
   - [Step 5 接入主程序](#step-5-接入主程序)
@@ -33,14 +33,14 @@
 |---|---|
 | 自主导航 | 从入口出发，按指定路径介入各主要支气管分支 |
 | 岔口识别 | 识别当前视野中的岔口，自动选择正确分支进入 |
-| 结石/黏液清理 | 检测到目标时自动切换清理子策略，清理后恢复导航 |
+| 阻塞物/黏液清理 | 检测到目标时自动切换清理子策略，清理后恢复导航 |
 | 多路径支持 | 一个模型覆盖左主支气管、右主支气管等9条路径 |
 | 实时推理 | GRU推理延迟 < 2ms（4090），可在20~60Hz控制循环中运行 |
 
 **工作流程**
 
 ```
-专家手动介入（录制中）
+专家手动介入（采集中）
         ↓
   ActionRecorder + 视觉特征同步保存 → expert_demos/*.h5
         ↓
@@ -62,11 +62,11 @@
 ├── README.md            ← 本文档
 ├── 1.py                 ← 命令行入口（训练/验证/查看演示）
 ├── model.py             ← 策略网络定义（BronchusPolicy，OBS_DIM=20）
-├── data_collector.py    ← 专家演示录制器（含速度+dt+视觉特征）
+├── data_collector.py    ← 专家演示采集器（含速度+dt+视觉特征）
 ├── dataset.py           ← PyTorch Dataset & DataLoader
 ├── train.py             ← BC 训练主循环
 ├── inference.py         ← 实时推理接口（接入主程序）
-├── expert_demos/        ← 录制的演示数据（自动创建）
+├── expert_demos/        ← 采集的演示数据（自动创建）
 │   ├── 20260527_143022_LMB_1800frames.h5   ← 左主支气管
 │   ├── 20260527_151033_RMB_1650frames.h5   ← 右主支气管
 │   └── ...
@@ -86,7 +86,7 @@ cd g:\zq\Napoleon2025\2026\BC
 # 0. 检查依赖
 python bc_main.py install_check
 
-# 1. 在主程序 UI 中录制专家演示（见下方 Step 2）
+# 1. 在主程序 UI 中采集专家演示（见下方 Step 2）
 
 # 2. 训练
 python bc_main.py train --epochs 150
@@ -123,16 +123,16 @@ python bc_main.py install_check
 
 ---
 
-### Step 2 录制专家演示
+### Step 2 采集专家演示
 
-**录制方式：直接在主程序 UI 操作**（推荐，无需另开终端）
+**采集方式：直接在主程序 UI 操作**（推荐，无需另开终端）
 
-录制流程：
+采集流程：
 1. 正常启动主程序 `main2026-Xhandwriting-AC-Auto(5.19depthtest)-Bronchus.py`
-2. 在 UI 的「动作录制与回放」区域，**选择当前要录制的支气管路径**（下拉菜单，见下方主程序集成说明）
-3. 点击「**开始录制**」→ 专家用手柄按正常临床流程介入
-4. 遇到结石/黏液时正常操作清理，系统自动标记为清理帧
-5. 完成后点击「**停止录制**」→ 自动保存到 `BC/expert_demos/`
+2. 在 UI 的「动作采集与导航」区域，**选择当前要采集的支气管路径**（下拉菜单，见下方主程序集成说明）
+3. 点击「**开始采集**」→ 专家用手柄按正常临床流程介入
+4. 遇到阻塞物/黏液时正常操作清理，系统自动标记为清理帧
+5. 完成后点击「**停止采集**」→ 自动保存到 `BC/expert_demos/`
 
 文件命名规则（自动生成，全英文）：
 ```
@@ -144,7 +144,7 @@ python bc_main.py install_check
 
 **路径标签（YOLO 代码）**
 
-| YOLO 代码 | 中文名 | 建议录制次数 |
+| YOLO 代码 | 中文名 | 建议采集次数 |
 |---|---|---|
 | EXP | 自主探索（不指定目标） | 10次 |
 | TR  | 气管 | 5次 |
@@ -157,13 +157,13 @@ python bc_main.py install_check
 | RML | 右中叶 | 5次 |
 | RLL | 右下叶 | 5次 |
 
-**录制质量要求**
-- 每次录制时长建议 30~120 秒
+**采集质量要求**
+- 每次采集时长建议 30~120 秒
 - 操作要连贯，**避免中途长时间暂停**（dt 突变会影响速度特征质量）
-- 如遇结石/黏液目标，正常操作清理后继续前进（自动标记为清理帧）
+- 如遇阻塞物/黏液目标，正常操作清理后继续前进（自动标记为清理帧）
 - 同一路径从**不同初始姿态**出发（手柄轻微偏转后再归零，覆盖扰动场景）
 
-**查看已录制数据**
+**查看已采集数据**
 ```powershell
 python bc_main.py list
 ```
@@ -219,7 +219,7 @@ python bc_main.py test --path 2
 ─────────────────────────────────────────────────
    1  +0.000   +0.021   -0.015  navigate      0.923
    2  +0.043   +0.018   -0.012  navigate      0.911
-   8  +0.000   +0.000   +0.000  clear_stone   0.876
+   8  +0.000   +0.000   +0.000  clear_obstruction   0.876
 ```
 
 ---
@@ -278,10 +278,10 @@ from data_collector import update_visual_features
 
 # 每帧处理结束后调用（在 apply_motor_command 附近）
 update_visual_features(
-    stone_cx        = cx_norm,          # 结石质心 x，归一化到 [-1,1]
-    stone_cy        = cy_norm,          # 结石质心 y
-    stone_area      = area_ratio,       # 像素面积比 [0,1]
-    stone_detected  = bool(has_stone),
+    obstruction_cx        = cx_norm,          # 阻塞物质心 x，归一化到 [-1,1]
+    obstruction_cy        = cy_norm,          # 阻塞物质心 y
+    obstruction_area      = area_ratio,       # 像素面积比 [0,1]
+    obstruction_detected  = bool(has_obstruction),
     bifur_cx        = bfx,             # 岔口质心 x
     bifur_cy        = bfy,
     bifur_area      = bf_area,
@@ -308,10 +308,10 @@ STANDARD_VOICE_COMMANDS["开始自动"] = "ai_auto"
 
 | 索引 | 字段名 | 归一化 | 来源 | 作用 |
 |---|---|---|---|---|
-| 0 | stone_cx | ÷1.0 | HSV 分割质心 x（已归一化） | 结石位置 |
-| 1 | stone_cy | ÷1.0 | HSV 分割质心 y | 结石位置 |
-| 2 | stone_area | ÷1.0 | 结石像素面积比 [0,1] | 结石大小/距离 |
-| 3 | stone_detected | ÷1.0 | 0/1 布尔值 | 触发清理子策略 |
+| 0 | obstruction_cx | ÷1.0 | HSV 分割质心 x（已归一化） | 阻塞物位置 |
+| 1 | obstruction_cy | ÷1.0 | HSV 分割质心 y | 阻塞物位置 |
+| 2 | obstruction_area | ÷1.0 | 阻塞物像素面积比 [0,1] | 阻塞物大小/距离 |
+| 3 | obstruction_detected | ÷1.0 | 0/1 布尔值 | 触发清理子策略 |
 | 4 | bifur_cx | ÷1.0 | 岔口质心 x | 岔口方向 |
 | 5 | bifur_cy | ÷1.0 | 岔口质心 y | 岔口方向 |
 | 6 | bifur_area | ÷1.0 | 岔口面积比 | 岔口大小/距离 |
@@ -331,7 +331,7 @@ STANDARD_VOICE_COMMANDS["开始自动"] = "ai_auto"
 
 > **为什么要加速度和 dt？**
 > - 只有位置时，GRU 无法区分"电机正在高速转动"和"静止"，容易在转向到位后继续输出转向指令导致过冲。速度信号让模型知道当前动量，学会在适当时机减速。
-> - dt 处理帧间隔不均匀的情况：手柄操作停顿、录制暂停恢复、推理时帧率波动，都会让动作幅度失真，dt 归一化修正这个误差。
+> - dt 处理帧间隔不均匀的情况：手柄操作停顿、采集暂停恢复、推理时帧率波动，都会让动作幅度失真，dt 归一化修正这个误差。
 
 ---
 
@@ -467,7 +467,7 @@ python -c "from BC.inference import AI_AUTO_INTEGRATION_SNIPPET; print(AI_AUTO_I
 
 **数据多样性**
 - 每条路径至少从 **3种不同初始姿态** 出发
-- 包含结石清理场景（约占总帧数 20%）
+- 包含阻塞物清理场景（约占总帧数 20%）
 - 包含错误恢复（操作失误后人工纠正）
 
 **超参数调整建议**
@@ -505,11 +505,11 @@ python bc_main.py train --resume checkpoints/bc_best.pth --epochs 50
 **Q: 推理时电机几乎不动？**  
 `action_scale_factor` 太小，逐步调大：`runner.set_scale(0.5)` → `0.8` → `1.0`
 
-**Q: 子任务一直输出 clear_stone？**  
-视觉特征 `stone_detected` 一直为 True，检查 `predict_wqx-Bronchus.py` 中的 HSV 阈值是否过于宽松。
+**Q: 子任务一直输出 clear_obstruction？**
+视觉特征 `obstruction_detected` 一直为 True，检查 `predict_wqx-Bronchus.py` 中的 HSV 阈值是否过于宽松。
 
 **Q: 验证损失震荡不收敛？**  
-演示数据中同一路径的操作风格不一致（不同人录制或每次操作差异很大），建议统一操作规范后重新录制。
+演示数据中同一路径的操作风格不一致（不同人采集或每次操作差异很大），建议统一操作规范后重新采集。
 
 **Q: 想切换巡检目标（例如从左主改右主）？**  
 ```python

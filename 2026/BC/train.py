@@ -138,7 +138,7 @@ def train(args):
         balance_paths = True,
     )
     if len(train_loader.dataset) == 0:
-        print("训练集为空！请先录制专家演示数据（运行 python 1.py record）")
+        print("训练集为空！请先采集专家演示数据（运行 python 1.py record）")
         return
 
     # ── 模型 ───────────────────────────────────────────────
@@ -252,7 +252,7 @@ def dagger_collect_and_retrain(
     ─────────────────
     1. 加载已训练的 BC 策略
     2. 将策略部署到真实机器人上运行（用 inference.py 的 BCRunner）
-    3. 同时启动 BronchusDataCollector 录制（专家随时可以用手柄纠正）
+    3. 同时启动 BronchusDataCollector 采集（专家随时可以用手柄纠正）
     4. 纠正时的动作 = 专家真实动作（覆盖策略输出）
     5. 结束后调用本函数：合并新旧数据 → 重新训练
 
@@ -262,7 +262,7 @@ def dagger_collect_and_retrain(
 
     base_demo_dir = os.path.join(os.path.dirname(__file__), args.demo_dir)
     new_files = [f for f in os.listdir(new_demo_dir) if f.endswith((".h5", ".npz"))]
-    print(f"[DAgger] 新录制 {len(new_files)} 条轨迹，合并到训练集...")
+    print(f"[DAgger] 新采集 {len(new_files)} 条轨迹，合并到训练集...")
 
     for f in new_files:
         shutil.copy(

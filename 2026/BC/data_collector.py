@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-BronchusDataCollector — 增强版专家演示录制器
+BronchusDataCollector — 增强版专家演示采集器
 ==============================================
-在专家手动操作期间同步录制：
+在专家手动操作期间同步采集：
   · 电机角度序列（M0/M1/M2）
-  · 每帧结构化视觉特征（结石/岔口/深度）
+  · 每帧结构化视觉特征（阻塞物/岔口/深度）
   · 控制模式标签（导航/清理）
   · 路径标签（通向哪条主支气管）
 
@@ -30,13 +30,25 @@ except ImportError:
     HDF5_AVAILABLE = False
     print("[DataCollector] 警告: h5py 未安装，将使用 npz 格式。运行: pip install h5py")
 
-from model import (
-    OBS_FIELDS, BRONCHUS_PATHS, NUM_GOALS,
-    YOLO_CODE_TO_IDX, IDX_TO_YOLO, IDX_TO_NAME,
-    path_idx,
-    TASK_NAVIGATE, TASK_CLEAR,
-    build_obs_vector,
-)
+try:
+    # 主程序和视觉线程均通过 BC.data_collector 导入，优先使用包内路径，
+    # 确保二者拿到同一个共享特征字典。
+    from .model import (
+        OBS_FIELDS, BRONCHUS_PATHS, NUM_GOALS,
+        YOLO_CODE_TO_IDX, IDX_TO_YOLO, IDX_TO_NAME,
+        path_idx,
+        TASK_NAVIGATE, TASK_CLEAR,
+        build_obs_vector,
+    )
+except ImportError:
+    # 保留直接在 BC 目录运行旧脚本时的兼容性。
+    from model import (
+        OBS_FIELDS, BRONCHUS_PATHS, NUM_GOALS,
+        YOLO_CODE_TO_IDX, IDX_TO_YOLO, IDX_TO_NAME,
+        path_idx,
+        TASK_NAVIGATE, TASK_CLEAR,
+        build_obs_vector,
+    )
 
 
 # ──────────────────────────────────────────────────────────────
@@ -45,13 +57,16 @@ from model import (
 # ──────────────────────────────────────────────────────────────
 
 _visual_features: Dict[str, Any] = {
-    "stone_cx":         0.0,
-    "stone_cy":         0.0,
-    "stone_area":       0.0,
-    "stone_detected":   False,
+    "obstruction_cx":       0.0,
+    "obstruction_cy":       0.0,
+    "obstruction_area":     0.0,
+    "obstruction_detected": False,
+    "obstruction_depth_mm": 0.0,
     "bifur_cx":         0.0,
     "bifur_cy":         0.0,
     "bifur_area":       0.0,
+    "bifur_detected":   False,
+    "visual_timestamp": 0.0,
     "depth_center_mm":  0.0,
     "depth_mean_mm":    0.0,
     "depth_max_mm":     0.0,
@@ -70,8 +85,8 @@ def update_visual_features(**kwargs):
     示例（在 predict_wqx-Bronchus.py 中添加）:
         from BC.data_collector import update_visual_features
         update_visual_features(
-            stone_cx=cx_norm, stone_cy=cy_norm,
-            stone_area=area_ratio, stone_detected=has_stone,
+            obstruction_cx=cx_norm, obstruction_cy=cy_norm,
+            obstruction_area=area_ratio, obstruction_detected=has_obstruction,
             bifur_cx=bfx, bifur_cy=bfy, bifur_area=bf_area,
             depth_center_mm=z_center, depth_mean_mm=z_mean, depth_max_mm=z_max,
             path_left_mm=path_l, path_center_mm=path_c, path_right_mm=path_r,
@@ -79,6 +94,8 @@ def update_visual_features(**kwargs):
     """
     with _vis_lock:
         _visual_features.update(kwargs)
+        # 使用单调时钟供 AutoNav 判断视觉数据是否停更；不写入演示文件。
+        _visual_features["visual_timestamp"] = time.monotonic()
 
 
 def get_visual_features() -> Dict[str, Any]:
@@ -108,10 +125,10 @@ class Frame:
     delta_m1:       float = 0.0
     delta_m2:       float = 0.0
     # 视觉特征（已归一化）
-    stone_cx:       float = 0.0
-    stone_cy:       float = 0.0
-    stone_area:     float = 0.0
-    stone_detected: float = 0.0
+    obstruction_cx:       float = 0.0
+    obstruction_cy:       float = 0.0
+    obstruction_area:     float = 0.0
+    obstruction_detected: float = 0.0
     bifur_cx:       float = 0.0
     bifur_cy:       float = 0.0
     bifur_area:     float = 0.0
@@ -126,7 +143,7 @@ class Frame:
 
 
 # ──────────────────────────────────────────────────────────────
-# 录制器主类
+# 采集器主类
 # ──────────────────────────────────────────────────────────────
 
 class BronchusDataCollector:
@@ -182,9 +199,9 @@ class BronchusDataCollector:
     # ── 控制接口 ──────────────────────────────────────────────
 
     def start(self, session_name: str = "", path_label: Optional[int] = None) -> bool:
-        """开始录制。返回 True 表示成功。"""
+        """开始采集。返回 True 表示成功。"""
         if self._is_recording:
-            print("[DataCollector] 已在录制中，请先停止")
+            print("[DataCollector] 已在采集中，请先停止")
             return False
 
         if path_label is not None:
@@ -198,7 +215,7 @@ class BronchusDataCollector:
 
         yolo_code = IDX_TO_YOLO.get(self.path_label, "EXP")
         path_name = IDX_TO_NAME.get(self.path_label, "unknown")
-        print(f"[DataCollector] 开始录制: {self._session_name}")
+        print(f"[DataCollector] 开始采集: {self._session_name}")
         print(f"  目标路径: [{yolo_code}] {path_name}")
         print(f"  采集频率: {self.record_hz} Hz  存储目录: {self.save_dir}")
         self._prev_time = None   # 用于计算 dt
@@ -206,8 +223,8 @@ class BronchusDataCollector:
 
     def collect_frame(self) -> bool:
         """
-        在控制循环中每帧调用，录制当前帧数据。
-        返回 True 表示录制成功，False 表示未在录制。
+        在控制循环中每帧调用，采集当前帧数据。
+        返回 True 表示采集成功，False 表示未在采集。
         """
         if not self._is_recording:
             return False
@@ -260,7 +277,7 @@ class BronchusDataCollector:
 
         # 自动判断子任务标签
         if self.auto_task_label:
-            task = TASK_CLEAR if vis.get("stone_detected", False) else TASK_NAVIGATE
+            task = TASK_CLEAR if vis.get("obstruction_detected", False) else TASK_NAVIGATE
         else:
             task = TASK_NAVIGATE
 
@@ -270,10 +287,10 @@ class BronchusDataCollector:
             m0_angle=m0, m1_angle=m1, m2_angle=m2,
             m0_vel=round(v0, 2), m1_vel=round(v1, 2), m2_vel=round(v2, 2),
             delta_m0=round(dm0, 3), delta_m1=round(dm1, 3), delta_m2=round(dm2, 3),
-            stone_cx=vis.get("stone_cx", 0.0),
-            stone_cy=vis.get("stone_cy", 0.0),
-            stone_area=vis.get("stone_area", 0.0),
-            stone_detected=float(vis.get("stone_detected", False)),
+            obstruction_cx=vis.get("obstruction_cx", 0.0),
+            obstruction_cy=vis.get("obstruction_cy", 0.0),
+            obstruction_area=vis.get("obstruction_area", 0.0),
+            obstruction_detected=float(vis.get("obstruction_detected", False)),
             bifur_cx=vis.get("bifur_cx", 0.0),
             bifur_cy=vis.get("bifur_cy", 0.0),
             bifur_area=vis.get("bifur_area", 0.0),
@@ -289,14 +306,14 @@ class BronchusDataCollector:
         return True
 
     def stop(self) -> Optional[str]:
-        """停止录制并保存文件。返回保存路径。"""
+        """停止采集并保存文件。返回保存路径。"""
         if not self._is_recording:
             return None
         self._is_recording = False
 
         n = len(self._frames)
         if n < 10:
-            print(f"[DataCollector] 录制帧数太少 ({n} 帧)，已丢弃")
+            print(f"[DataCollector] 采集帧数太少 ({n} 帧)，已丢弃")
             return None
 
         duration  = self._frames[-1].timestamp if self._frames else 0.0
@@ -334,13 +351,13 @@ class BronchusDataCollector:
           "n_frames": 101,
           "duration_s": 5.05,
           "record_hz": 20.0,
-          "obs_fields": ["stone_cx", ...],
+          "obs_fields": ["obstruction_cx", ...],
           "frames": [
             {"timestamp": 0.0, "dt": 0.05,
              "m0_angle": -719.0, "m1_angle": -6.0, "m2_angle": 360.0,
              "m0_vel": 0.0, "m1_vel": 0.0, "m2_vel": 0.0,
              "delta_m0": 0.0, "delta_m1": 0.0, "delta_m2": 0.0,
-             "stone_cx": 0.0, ... "task_label": 0},
+             "obstruction_cx": 0.0, ... "task_label": 0},
             ...
           ]
         }
@@ -370,10 +387,10 @@ class BronchusDataCollector:
                     "delta_m0":     round(f.delta_m0, 3),
                     "delta_m1":     round(f.delta_m1, 3),
                     "delta_m2":     round(f.delta_m2, 3),
-                    "stone_cx":     round(f.stone_cx, 4),
-                    "stone_cy":     round(f.stone_cy, 4),
-                    "stone_area":   round(f.stone_area, 4),
-                    "stone_detected": bool(f.stone_detected),
+                    "obstruction_cx":       round(f.obstruction_cx, 4),
+                    "obstruction_cy":       round(f.obstruction_cy, 4),
+                    "obstruction_area":     round(f.obstruction_area, 4),
+                    "obstruction_detected": bool(f.obstruction_detected),
                     "bifur_cx":     round(f.bifur_cx, 4),
                     "bifur_cy":     round(f.bifur_cy, 4),
                     "bifur_area":   round(f.bifur_area, 4),
@@ -476,7 +493,7 @@ class BronchusDataCollector:
 
 
 # ──────────────────────────────────────────────────────────────
-# 工具：列出已录制的演示文件
+# 工具：列出已采集的演示文件
 # ──────────────────────────────────────────────────────────────
 
 def list_demos(demo_dir: str = "expert_demos") -> List[dict]:

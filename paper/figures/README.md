@@ -1,24 +1,22 @@
-# Figures Placeholder
+# IEEE RA-L 配图占位与制作说明（2026-07-16）
 
-论文需要的图片（矢量图 PDF/SVG，300 dpi）：
+主稿已经放置 8 个 LaTeX 图框。正式投稿时按下表替换；结构图和曲线优先导出矢量 PDF，真实内镜图使用无损 PNG。
 
-| 文件名 | 内容 | 建议工具 |
-|--------|------|---------|
-| fig1_system_overview.pdf | 系统四层架构图 | draw.io → 导出 PDF |
-| fig2_perception.pdf | 感知流程图（原始帧/UNet/深度/DepthPath）| 代码截图拼图 |
-| fig3_network.pdf | BronchusPolicy 网络架构图 | draw.io / PowerPoint |
-| fig4_results.pdf | 实验结果：NSR柱状图+轨迹图+电机曲线 | matplotlib |
+| 图号 | 推荐版式 | 内容与子图 |
+|---|---|---|
+| Fig. 1 AutoNav3Layer 总架构 | 双栏通栏优先 | 专家数据与 GRU；RGB、U-Net、YOLO、Depth Anything；Layer 1 全局导航；Layer 2 进度加权修正；Layer 3 持续吸引、任务连续性和最终归零。区分学习模型、安全逻辑和硬件。 |
+| Fig. 2 U-Net 训练与结果 | 单栏四子图 | RGB/标签示例；VGG-U-Net 结构；训练/验证 loss 与 Dice；测试集 TP/FP/FN 叠加图。必须注明训练/验证/测试图像数。 |
+| Fig. 3 多模态感知 | 双栏通栏或单栏四列 | 同一时刻的 RGB、黏液 mask、YOLO 部位、深度图；另加解剖拓扑确认过程和深度标定散点图。 |
+| Fig. 4 GRU 网络与训练 | 单栏 | 8×20 输入、128-D 编码、16-D goal embedding、双层 GRU-256、动作/任务双头；右侧画三次随机种子的训练曲线，标出最佳 epoch 29。 |
+| Fig. 5 Layer 2 优化 | 单栏四子图 | 多岔口候选与最近中心选择；进度权重曲线；距离权重曲线；Layer 1 基准、视觉偏置、最终命令和碰壁事件同步曲线。 |
+| Fig. 6 Layer 3 完整过程 | 双栏通栏 | 巡检、发现黏液、深度靠近、中心吸引、连续 15 帧消失确认、继续巡检六帧；下方画路径索引、M0–M2、mask 面积、深度、泵状态、保存位置误差和最终归零。 |
+| Fig. 7 实验装置 | 单栏 | 机器人、固定起点、支气管仿体、目标分支、真空泵、收集瓶、黏液替代物位置、扰动条件和随机试验顺序。 |
+| Fig. 8 最终结果 | 双栏通栏 | 各目标成功率；Layer 1 与 Layer 1+2 中心误差/接触对比；Layer 3 清除曲线；继续巡检成功率和归零误差；消融瀑布图。全部给 95% CI。 |
 
-## draw.io 使用提示
-1. 打开 https://app.diagrams.net/
-2. 绘制完成后 File → Export → PDF（勾选 "Fit page"）
-3. 放入此目录，LaTeX 会自动引用
+统一规范：
 
-## matplotlib 结果图模板
-```python
-import matplotlib.pyplot as plt
-import matplotlib as mpl
-mpl.rcParams['pdf.fonttype'] = 42   # 保证字体可编辑
-mpl.rcParams['ps.fonttype']  = 42
-fig.savefig('fig4_results.pdf', bbox_inches='tight', dpi=300)
-```
+- 颜色固定：Layer 1 蓝色、Layer 2 橙色、Layer 3 绿色、人工基线灰色、失败红色。
+- 所有时序图共用时间轴，并标出视觉检测、控制模式切换和人工介入。
+- 内镜图不能只放成功样例；至少加入低照度、反光、模糊和短暂漏检案例。
+- 旧 `fig4_results.png` 中的示例数值不得用于论文。
+

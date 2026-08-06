@@ -15,7 +15,6 @@ from ToolKits.Timer import maintain_target_frequency, busy_maintain_target_frequ
 import numpy as np
 from config import *
 from ToolKits.ToolBox import get_time
-import ctypes
 
 debug = False
 
@@ -345,11 +344,23 @@ class RmdMotor:
         返回值:
         List[str]: 编码后的十六进制字符串。
         """
-        # 计算整数的二进制补码。
-        if value < 0:
-            value = ctypes.c_int16(value).value & ((1 << (4 * hex_length)) - 1)
+        # 按字段自身位宽生成二进制补码。旧实现无论 hex_length 是 4 还是 8
+        # 都先转为 int16，导致 A4 的 32 位多圈位置在 position < -327.68°
+        # 时溢出为正数（例如 -36000 被错误编码为 +29536）。
+        if hex_length <= 0 or hex_length % 2 != 0:
+            raise ValueError(f"hex_length 必须是正偶数，当前为 {hex_length}")
 
-        hex_value = f"{value:0{hex_length}X}"
+        bit_width = 4 * hex_length
+        min_value = -(1 << (bit_width - 1))
+        max_value = (1 << (bit_width - 1)) - 1
+        if not min_value <= value <= max_value:
+            raise OverflowError(
+                f"{value} 超出 {bit_width} 位有符号整数范围 "
+                f"[{min_value}, {max_value}]"
+            )
+
+        encoded_value = value & ((1 << bit_width) - 1)
+        hex_value = f"{encoded_value:0{hex_length}X}"
         return [hex_value[i:i+2] for i in range(0, len(hex_value), 2)]
 
     def __modbusCrc(self, msg: str) -> int:

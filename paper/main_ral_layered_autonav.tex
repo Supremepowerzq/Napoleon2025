@@ -1,0 +1,665 @@
+% IEEE RA-L full development draft, revised 2026-07-16.
+% Magenta/red placeholders require measured evidence before submission.
+\documentclass[letterpaper,10pt,conference]{ieeeconf}
+\IEEEoverridecommandlockouts
+\overrideIEEEmargins
+
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{xcolor}
+\usepackage{cite}
+\usepackage{url}
+
+\newcommand{\TODO}[1]{\textcolor{red}{\textbf{[TODO: #1]}}}
+\newcommand{\RESULT}[1]{\textcolor{magenta}{\textbf{[RESULT: #1]}}}
+\newcommand{\obs}{\mathbf{o}}
+\newcommand{\act}{\mathbf{a}}
+\newcommand{\goal}{g}
+\newcommand{\hid}{\mathbf{h}}
+\newcommand{\qcmd}{\mathbf{q}^{\mathrm{cmd}}}
+\newcommand{\qnom}{\mathbf{q}^{\mathrm{nom}}}
+\newcommand{\qmeas}{\mathbf{q}^{\mathrm{meas}}}
+
+\title{Progress-Aware Multimodal Autonomy for Robotic Bronchoscopy:\\
+Recurrent Imitation Learning, Visual Junction Guidance, and Continuous Suction}
+
+\author{Anonymous Authors%
+\thanks{\TODO{Insert authors, affiliations, funding, and corresponding-author details.}}}
+
+\begin{document}
+\maketitle
+\thispagestyle{empty}
+\pagestyle{empty}
+
+\begin{abstract}
+Autonomous bronchoscopy requires long-horizon motor coordination, reliable
+anatomical localization, local centering at visually ambiguous bifurcations,
+and uninterrupted secretion management. We present a three-layer multimodal
+autonomy framework learned from 87 real-robot expert demonstrations containing
+30,730 synchronized frames. A goal-conditioned gated recurrent unit (GRU)
+encodes an eight-frame history of 20-dimensional motor, perception, and depth
+features and predicts three-axis motor increments together with an auxiliary
+task label. The best saved model contains 773,221 parameters and achieved a
+held-out action mean-squared error of 0.002084 and task accuracy of 100\%.
+Layer~2 couples lumen geometry with a continuous progress--distance authority
+schedule, allowing bounded visual steering to increase gradually without
+overriding the global navigation direction. Layer~3 combines U-Net mucus
+segmentation, YOLO-based anatomical recognition, Depth Anything V2 distance
+estimation, continuously active vacuum suction, and progress-aware mission
+continuity. Integrated phantom trials completed target-directed navigation,
+online junction centering, secretion clearance, continuation of the remaining
+inspection, and autonomous homing. Quantitative route, collision, clearance,
+and timing results are organized in a locked reporting protocol and remain to
+be inserted from the final trial sheet. The principal innovation is a unified
+architecture in which learned global intent, geometry-driven local correction,
+anatomical state, and therapeutic interaction operate at explicitly bounded
+levels of authority.
+\end{abstract}
+
+\begin{keywords}
+Medical robots and systems; imitation learning; autonomous navigation;
+bronchoscopy; visual servoing; semantic segmentation.
+\end{keywords}
+
+\section{Introduction}
+
+Robotic bronchoscopy improves stability and peripheral reach, with feasibility,
+multicenter, and shape-sensing studies demonstrating its clinical potential
+\cite{fielding2019firsthuman,chaddha2019multicenter,rojassolano2018feasibility,
+chen2021benefit,kalchiem2022shapesensing}. Meta-analyses nevertheless report
+heterogeneous performance and motivate standardized system-level evaluation
+\cite{ali2023metaanalysis,zhang2024metaanalysis}. Most deployed platforms
+remain operator driven, while autonomous traversal must handle repeated visual
+patterns, uncertain lumen geometry, nonrigid contact, and secretions.
+
+Recent bronchoscopy systems use simulator-trained shared control, multimodal
+reinforcement learning, topological localization, or pure-vision agents
+\cite{zhang2024aicopilot,zhao2024bronchocopilot,cold2026bronchobot,
+wu2026longshort,tomasini2025topological}. Their progress exposes a central
+control dilemma: a global policy is needed to preserve anatomical intent, but
+local image feedback is needed to reduce wall contact. Unconstrained image
+centering can select the wrong lumen or accumulate large steering bias. A
+practical system must therefore regulate when and how strongly visual evidence
+may modify the global command. It should also manage mucus during inspection
+without discarding route progress.
+
+We propose a progress-aware three-layer architecture (Fig.~\ref{fig:overview}).
+Its contributions are:
+
+\begin{enumerate}
+  \item a compact goal-conditioned GRU trained from synchronized expert motor,
+  visual, depth, and anatomical data, with directly auditable training metrics;
+  \item a multimodal perception stack combining U-Net target segmentation,
+  YOLO anatomical recognition, topology- and motion-constrained temporal
+  confirmation, and Depth Anything V2 metric depth;
+  \item a progress--distance weighted junction controller that inserts a
+  bounded $M_1/M_2$ correction into the global command while preserving the
+  insertion axis and long-horizon route direction;
+  \item a continuously active suction strategy coupled with mucus tracking,
+  depth-aware approach, saved navigation state, mission continuation, and
+  autonomous homing; and
+  \item an evaluation framework spanning model accuracy, route completion,
+  centerline tracking, wall contact, mucus clearance, continuity, and optional
+  bounded reinforcement-learning refinement.
+\end{enumerate}
+
+\begin{figure}[t]
+\centering
+\fbox{\parbox[c][4.3cm][c]{0.94\columnwidth}{\centering
+\textbf{FIGURE 1 PLACEHOLDER --- Complete three-layer architecture}\\[1.5mm]
+Draw five horizontal blocks: expert data and GRU training; RGB/YOLO/U-Net/Depth
+Anything perception; Layer~1 global policy; Layer~2 progress-weighted visual
+correction; Layer~3 mucus intervention and mission continuity. Show camera,
+$M_0$--$M_2$, continuously active vacuum pump, motor feedback, anatomical goal,
+saved progress index, and final homing arrow. Use different colors for learned
+models, deterministic safety logic, and physical hardware.}}
+\caption{The proposed multimodal AutoNav3Layer framework.}
+\label{fig:overview}
+\end{figure}
+
+\section{Related Work}
+
+\subsection{Robotic Bronchoscopy and Continuum Control}
+
+Bronchoscope mechanics inherit the nonlinearities of tendon-driven continuum
+robots. Constant-curvature, tendon-routing, Cosserat-rod, and medical continuum
+robot studies provide the modeling foundation
+\cite{camarillo2008mechanics,webster2010continuum,rucker2011statics,
+burgner2015survey,till2019cosserat}. Friction, hysteresis, mounting variation,
+and wall interaction limit model-only control. Deep visual servoing has thus
+been explored for intraluminal navigation~\cite{lazo2022visualservo};
+bronchoscopy-specific systems additionally use CT-derived environments, images,
+or robot pose~\cite{zhang2024aicopilot,zhao2024bronchocopilot,xu2025lungdepth}.
+Our approach separates global anatomical intent from bounded local correction.
+
+\subsection{Imitation and Reinforcement Learning}
+
+Learning from demonstration transfers expert skill without unsafe unrestricted
+exploration~\cite{argall2009survey,osa2018imitation}. Behavioral cloning is
+data efficient but can suffer from distribution shift, motivating aggregation
+and adversarial formulations~\cite{ross2011dagger,ho2016gail}. Goal tokens
+disambiguate actions at shared observations~\cite{codevilla2018conditional},
+while LSTM and GRU models capture temporal context
+\cite{hochreiter1997lstm,cho2014gru}. Recent robot-learning studies emphasize
+demonstration quality, temporal action representations, multimodality, and
+closed-loop evaluation
+\cite{mandlekar2022robomimic,florence2022ibc,shafiullah2022bet,
+chi2024diffusionpolicy,zhao2023act,lynch2020play,levine2016visuomotor}.
+For conservative post-training refinement, we formulate a bounded PPO residual
+using the clipped policy objective~\cite{schulman2017ppo} and a reproducible
+implementation framework~\cite{raffin2021sb3}.
+
+\subsection{Endoscopic Perception}
+
+U-Net and later segmentation architectures established strong dense-prediction
+baselines~\cite{ronneberger2015unet,he2017maskrcnn,chen2018deeplab}. Foundation
+models improve transferable visual representations
+\cite{kirillov2023sam,oquab2024dinov2}, while real-time one-stage detection
+supports anatomical recognition~\cite{redmon2016yolo}. Monocular depth and
+endoscopic adaptation provide geometric cues under limited texture
+\cite{godard2019monodepth2,yang2024depthanythingv2,ozyoruk2021endoslam,
+cui2024endodac,zeinoddin2024dares}. Because airway suction must be bounded and
+clinically supervised, we also follow bronchoscope suction studies and airway
+management guidance~\cite{lamb2022suction,blakeman2022suction}.
+
+\section{System and Data}
+
+\subsection{Platform}
+
+The system comprises a flexible bronchoscope, RGB endoscopic camera, three
+position-controlled motors, encoders, a vacuum suction pump, and a GPU
+workstation. $M_0$ controls insertion; $M_1$ and $M_2$ bend the distal tip in
+orthogonal directions. The pump remains active throughout autonomous inspection,
+so Layer~3 controls alignment and exposure rather than pump switching. Position,
+speed, image freshness, depth validity, and operator-stop conditions are checked
+before every command.
+
+\begin{table}[t]
+\caption{Hardware and Runtime Configuration}
+\label{tab:hardware}
+\centering\small
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{lll}
+\toprule
+Component & Role & Final reported value \\
+\midrule
+$M_0$ & insertion & range $[-900,0]^\circ$, max $80^\circ$/s \\
+$M_1$ & horizontal bending & range $[-170,170]^\circ$, max $30^\circ$/s \\
+$M_2$ & vertical bending & range $[-500,500]^\circ$, max $80^\circ$/s \\
+RGB camera & endoscopic perception & \RESULT{resolution, measured fps} \\
+Vacuum pump & continuous secretion suction & \RESULT{model, pressure/flow} \\
+GPU/CPU & model inference & \RESULT{hardware and total latency} \\
+Phantom & airway evaluation & \RESULT{model/material/scale} \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\subsection{Expert Demonstrations}
+
+Manual expert operation was synchronized with images, motor angles and
+velocities, perception features, depth values, timestamps, anatomical targets,
+and motor increments. The curated set contains 87 complete trajectories and
+30,730 frames over seven recorded targets (Table~\ref{tab:data}). Splitting is
+performed by whole trajectory to prevent adjacent-frame leakage.
+
+\begin{table}[t]
+\caption{Goal-Conditioned Expert Dataset}
+\label{tab:data}
+\centering\small
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{lrrr}
+\toprule
+Target & Trajectories & Frames & Mean frames \\
+\midrule
+TR & 5 & 640 & 128 \\
+LMB & 23 & 8,196 & 356 \\
+RMB & 26 & 6,326 & 243 \\
+LUB & 8 & 3,344 & 418 \\
+LLB & 8 & 6,071 & 759 \\
+RML & 8 & 3,237 & 405 \\
+RLL & 9 & 2,916 & 324 \\
+\midrule
+Total & 87 & 30,730 & 353 \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\section{Multimodal Perception}
+
+\subsection{U-Net Mucus Segmentation}
+
+The deployed segmentation branch uses a VGG-encoder U-Net with skip-connected
+decoder blocks and a $1\!\times\!1$ output projection. RGB frames are resized to
+$512\!\times\!512$. The current inference configuration separates mucus from
+background; a three-class training variant additionally represents the
+instrument. Training uses cross-entropy plus soft Dice loss,
+\begin{equation}
+ \mathcal{L}_{seg}=\mathcal{L}_{CE}+\lambda_D(1-\mathrm{Dice}),
+\end{equation}
+Adam with initial learning rate $10^{-4}$, cosine decay, and batch size two.
+Geometric and photometric augmentation should be reported exactly from the
+training run. The largest valid connected mucus component supplies centroid
+$\mathbf{c}^m_t$, area $A^m_t$, and mask $M^m_t$.
+
+\begin{figure}[t]
+\centering
+\fbox{\parbox[c][4.0cm][c]{0.94\columnwidth}{\centering
+\textbf{FIGURE 2 PLACEHOLDER --- U-Net training and segmentation}\\[1.5mm]
+Panel (a): representative RGB/mask pairs for clean lumen, thin mucus, thick
+mucus, specular highlight, blur, and partial occlusion. Panel (b): VGG-U-Net
+encoder/decoder diagram. Panel (c): train/validation loss and Dice curves.
+Panel (d): test examples with TP/FP/FN overlays. Include dataset sizes and 95\%
+CI for Dice and IoU.}}
+\caption{Mucus segmentation training and held-out performance.}
+\label{fig:unet}
+\end{figure}
+
+\subsection{YOLO Anatomical Recognition and Temporal Confirmation}
+
+A lightweight nine-class YOLO detector recognizes TR, RMB, RUL, RML, RLL, LMB,
+LUB, LLB, and BI. The model was initialized from YOLO11n and trained for 120
+epochs at $640\!\times\!640$, batch size 16, AdamW learning rate $5\times10^{-4}$,
+cosine decay, and weak geometric/color augmentation. It contains 2.59M
+parameters. Raw detections are filtered at confidence 0.30 and passed to a
+motion-aware anatomical state estimator. Only the current node, an allowed
+child during insertion, or the parent during withdrawal can be confirmed.
+Candidates require repeated observations; evidence is frozen during stationary
+frames, and branch-specific windows use insertion progress and bending evidence.
+This prevents single-frame anatomical jumps and makes location estimates
+consistent with the bronchial tree.
+
+\begin{table}[t]
+\caption{Verified YOLO Validation Metrics}
+\label{tab:yolo}
+\centering\small
+\begin{tabular}{lcccc}
+\toprule
+Classes & Precision & Recall & mAP50 & mAP50--95 \\
+\midrule
+9 & 0.8926 & 0.7797 & 0.9096 & 0.6006 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Depth Anything V2 and Robust Target Depth}
+
+Metric Depth Anything V2 estimates a dense depth map $D_t$. For a target mask,
+we erode boundary pixels, reject invalid samples, compute a robust central depth,
+apply scale/bias calibration, reject large temporal jumps, and filter with an
+EMA coefficient of 0.2. The resulting depth $\bar z_t$ controls insertion:
+approach when the target is distant, stop inside a safety band, and withdraw
+when too close. Depth is used as a control cue rather than an uncalibrated
+absolute measurement; phantom calibration error must be reported.
+
+\begin{figure}[t]
+\centering
+\fbox{\parbox[c][4.1cm][c]{0.94\columnwidth}{\centering
+\textbf{FIGURE 3 PLACEHOLDER --- Multimodal perception results}\\[1.5mm]
+Use four columns for raw RGB, U-Net mucus mask, YOLO anatomical detection, and
+Depth Anything map. Add a topology panel showing raw YOLO label, candidate
+counter, confirmed label, insertion/withdrawal direction, and permitted tree
+transition. Add a depth-calibration scatter plot with fitted line and error.}}
+\caption{U-Net, YOLO, topology, and depth outputs in representative airway scenes.}
+\label{fig:perception}
+\end{figure}
+
+\section{Hierarchical Control}
+
+\subsection{Layer 1: Goal-Conditioned Recurrent Imitation}
+
+Each observation $\obs_t\in\mathbb{R}^{20}$ contains mucus and junction
+features, center/mean/maximum depth, three directional path depths, three motor
+angles, three motor velocities, and elapsed time. An MLP maps it through
+$20\!\rightarrow\!128\!\rightarrow\!128$ with LayerNorm and ELU. The anatomical
+goal is embedded in 16 dimensions and concatenated across an eight-frame window:
+\begin{align}
+ \mathbf{e}_i&=f_o(\obs_i),\quad
+ \mathbf{u}_i=[\mathbf{e}_i\|\mathrm{Embed}(\goal)],\\
+ \hid_i&=\mathrm{GRU}(\mathbf{u}_i,\hid_{i-1}),\quad i=t-7,\ldots,t.
+\end{align}
+A two-layer GRU has hidden size 256 and dropout 0.1. Its action head is
+$256\!\rightarrow\!128\!\rightarrow\!3$ with ELU and $\tanh$; the task head is
+$256\!\rightarrow\!64\!\rightarrow\!2$. Normalized actions are scaled by
+$[5,3,3]^\circ$ for $M_0/M_1/M_2$. The total training objective is
+\begin{equation}
+ \mathcal{L}_{BC}=\|\hat\act_t-\act^E_t\|_2^2+
+ \lambda_s\mathrm{CE}(\hat{\mathbf z}_t,s^E_t).
+\end{equation}
+Training uses AdamW, OneCycleLR, mixed precision, gradient norm clipping at 1.0,
+batch size 64, and a trajectory-wise 90/10 split. The best model is selected by
+validation navigation loss.
+
+\begin{figure}[t]
+\centering
+\fbox{\parbox[c][4.1cm][c]{0.94\columnwidth}{\centering
+\textbf{FIGURE 4 PLACEHOLDER --- GRU structure and training curves}\\[1.5mm]
+Left: exact tensor dimensions for the 20-D observation encoder, 16-D goal
+embedding, 8-frame GRU, action head, and task head. Right: train/validation
+navigation loss and task accuracy for all available runs; mark the selected
+epoch 29 model and report mean$\pm$SD over at least three seeds.}}
+\caption{Goal-conditioned recurrent imitation policy and optimization history.}
+\label{fig:gru}
+\end{figure}
+
+\begin{table}[t]
+\caption{Verified GRU Training Evidence}
+\label{tab:gru}
+\centering\small
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{lcccc}
+\toprule
+Model & Parameters & Selected epoch & Val. action MSE & Val. task acc. \\
+\midrule
+Goal-conditioned GRU & 773,221 & 29 & 0.002084 & 1.000 \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+Layer~1 integrates the action into a bounded nominal target. To retain an
+auditable global direction under distribution shift, the controller constrains
+the learned command inside an expert-consistent envelope. The exact deployment
+coefficient and envelope width must be logged in the final experiment. This
+separation allows the learned policy to express goal-conditioned motor timing
+while preserving safe long-horizon intent.
+
+\subsection{Layer 2: Progress-Weighted Junction Correction}
+
+Dark-lumen candidates are extracted after circular masking and morphological
+opening. Among candidates exceeding the minimum area, the geometric center
+nearest the image center is selected. For normalized error
+$\mathbf e_t=[e^x_t,e^y_t]^\top$, the correction authority is the product of a
+progress weight and distance weight. With route progress $s_t\in[0,1]$,
+\begin{equation}
+ w_p(s_t)=\beta_0+(1-\beta_0)
+ \min\!\left(\frac{s_t}{s_f},1\right)^2,
+\end{equation}
+where $\beta_0=0.25$ and $s_f=0.80$. For center distance
+$d_t=\|\mathbf e_t\|_2$,
+\begin{equation}
+ w_d(d_t)=\begin{cases}
+ 1,&d_t\le0.30,\\
+ (0.75-d_t)/(0.75-0.30),&0.30<d_t<0.75,\\
+ 0,&d_t\ge0.75.
+ \end{cases}
+\end{equation}
+After an axis dead-zone of 0.08, raw offsets use gains
+$K_1=3.0$ and $K_2=2.5$, EMA coefficient 0.25, and per-axis total limit
+$5^\circ$. The command is
+\begin{equation}
+ \qcmd_t=\qnom_t+
+ w_p(s_t)w_d(d_t)[0,\delta q^v_{1,t},\delta q^v_{2,t}]^\top.
+\end{equation}
+Thus $M_0$ preserves Layer~1 progress, whereas $M_1/M_2$ receive small,
+smooth, nonaccumulating centerline corrections. Independent visual alignment
+uses a 10-pixel dead-zone and a far-fast/near-slow speed curve; motor-axis signs
+and vertical scaling were calibrated on the physical robot. This structure is
+related to bounded residual control~\cite{johannink2019residual}, but uniquely
+modulates authority with procedural progress and visual geometry.
+
+\begin{figure}[t]
+\centering
+\fbox{\parbox[c][4.1cm][c]{0.94\columnwidth}{\centering
+\textbf{FIGURE 5 PLACEHOLDER --- Layer 2 correction mechanism}\\[1.5mm]
+Panel (a): multiple lumen candidates and nearest-center selection. Panel (b):
+$w_p(s)$ and $w_d(d)$ curves. Panel (c): Layer~1 nominal $M_1/M_2$, bounded
+visual offsets, and final commands across a bifurcation. Panel (d): image-plane
+center error with/without Layer~2 and synchronized wall-contact markers.}}
+\caption{Continuous progress--distance weighting preserves global intent while improving local centering.}
+\label{fig:layer2}
+\end{figure}
+
+\subsection{Layer 3: Continuous Suction and Mission Continuity}
+
+The vacuum pump remains active during the inspection. When the U-Net mask
+exceeds the valid-area threshold, the controller stores route progress $k^*$
+and motor configuration $\mathbf q^*$, then prioritizes mucus tracking.
+$M_1/M_2$ center the mask, while $M_0$ approaches according to filtered depth
+and stops within the safety band. Missing detections do not immediately end the
+intervention: the target must remain absent for $N_{clear}=15$ frames. This
+dropout-tolerant rule, together with mask-area evolution and depth validity,
+suppresses false completion caused by blur or specular highlights.
+
+After clearance, the robot returns to $\mathbf q^*$ within a $5^\circ$ maximum
+axis error, re-enters the remaining route at progress index $k^*$, completes the
+selected airway inspection, and finally drives all three navigation axes to the
+defined origin. The hierarchy is therefore
+\begin{align}
+ \textsc{Navigate}&\rightarrow\textsc{Track/Clear}\rightarrow\textsc{Saved Pose}\nonumber\\
+ &\rightarrow\textsc{Continue}\rightarrow\textsc{Home}.
+\end{align}
+Continuous suction simplifies actuator coordination but requires reporting
+pump pressure, total exposure time, and any mucosal-contact surrogate.
+
+\begin{figure}[t]
+\centering
+\fbox{\parbox[c][4.3cm][c]{0.94\columnwidth}{\centering
+\textbf{FIGURE 6 PLACEHOLDER --- Layer 3 sequence and state variables}\\[1.5mm]
+Show six real frames: cruising with pump on, mucus detection, depth-aware
+approach, centered suction, 15-frame absence confirmation, and continued route.
+Below, plot route index, $M_0$--$M_2$, mask area, depth, target error, pump state,
+and final homing. Mark the saved pose and maximum return error.}}
+\caption{Continuous suction, mucus tracking, progress-aware mission continuity, and homing.}
+\label{fig:layer3}
+\end{figure}
+
+\subsection{Bounded Reinforcement-Learning Refinement}
+
+We formulate PPO as an optional residual tuner rather than an unrestricted
+motor policy. Its state contains GRU hidden features, route progress, center
+error, depth, tracking error, and recent contact evidence. Its action adjusts
+only Layer~2 gain and offset within fixed bounds. A suitable reward is
+\begin{align}
+ r_t={}&w_g\Delta s_t-w_c C_t-w_e\|\mathbf e_t\|_2
+ -w_j\|\Delta\act_t\|_2^2\nonumber\\
+ &-w_b\|\delta\mathbf q^v_t\|_2^2+w_T\mathbb I_{goal},
+\end{align}
+where $C_t$ is contact. Domain randomization covers start pose, illumination,
+friction, mask noise, and depth scale. The learned residual is accepted only
+when it improves held-out simulated success and then passes the same hardware
+limits. The existing standalone PPO artifact is not sufficient for this claim:
+its logged evaluation success is 0\%, so the AutoNav-specific PPO row remains a
+required experiment rather than a reported improvement.
+
+\section{Experiments and Results}
+
+\subsection{Study Design}
+
+Experiments should use paired, randomized trials on the same airway phantom.
+Targets include at least LMB, RMB, LUB, LLB, RUL, RML, and RLL. Conditions are
+nominal start, start-pose perturbation, illumination variation, lens
+contamination, and mucus placement at predefined locations. Report sample size
+per target, failure taxonomy, 95\% confidence intervals, and paired tests with
+multiple-comparison correction.
+
+Baselines are: (B0) expert manual control; (B1) frame-wise BC; (B2) GRU without
+goal; (B3) goal-conditioned GRU/Layer~1; (B4) reactive visual tracking only;
+(B5) Layer~1+2; (B6) full Layer~1+2+3; and (B7) full system with validated PPO
+residual, if available. Metrics are route success, wrong-branch rate, centerline
+error, contact count/duration, completion time, tracking error, intervention
+count, mucus clearance, clearance time, return-to-saved-pose error, continued
+route success, and homing error.
+
+\begin{figure}[t]
+\centering
+\fbox{\parbox[c][3.8cm][c]{0.94\columnwidth}{\centering
+\textbf{FIGURE 7 PLACEHOLDER --- Phantom protocol}\\[1.5mm]
+Photograph the robot, fixed start jig, airway phantom, target branches, vacuum
+pump and collection bottle. Overlay predefined mucus positions and perturbation
+conditions. Add a randomized trial timeline and failure taxonomy.}}
+\caption{Standardized hardware evaluation setup.}
+\label{fig:setup}
+\end{figure}
+
+\subsection{Model-Level Results}
+
+Table~\ref{tab:gru} and Table~\ref{tab:yolo} contain values recovered directly
+from saved model artifacts. The selected GRU model reduced validation action
+MSE from 0.02577 in the first logged epoch to 0.002084 at epoch 29, while task
+accuracy remained 100\% on the recorded validation split. Because task labels
+may be easy to separate, macro-F1 and per-class confusion must also be reported.
+The YOLO detector reached mAP50 0.9096, but recall 0.7797 indicates that temporal
+confirmation must tolerate missed frames. U-Net and depth results cannot be
+completed until the held-out masks and calibration logs are restored.
+
+\begin{table}[t]
+\caption{Perception Model Results to Report}
+\label{tab:perception}
+\centering\small
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{lccccc}
+\toprule
+Model & Task & Precision & Recall & Dice/mAP & Latency \\
+\midrule
+VGG-U-Net & mucus mask & \RESULT{--} & \RESULT{--} & \RESULT{Dice/IoU} & \RESULT{ms} \\
+YOLO11n & anatomy & 0.8926 & 0.7797 & 0.9096 mAP50 & \RESULT{ms} \\
+Depth Anything V2 & depth & -- & -- & \RESULT{MAE/RMSE} & \RESULT{ms} \\
+Fusion stack & synchronized & -- & -- & \RESULT{valid-frame rate} & \RESULT{fps} \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\subsection{Integrated Results}
+
+Qualitative integrated tests completed the full sequence of target-directed
+navigation, progress-weighted junction correction, continuous mucus suction,
+mission continuation, route completion, and homing. The final paper must replace
+this statement with the quantitative trial matrix below; videos alone are not
+sufficient evidence.
+
+\begin{table}[t]
+\caption{Navigation and Junction-Centering Comparison}
+\label{tab:navigation}
+\centering\small
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{lccccc}
+\toprule
+Method & Success & Wrong branch & Center error & Contacts & Time \\
+\midrule
+Expert & \RESULT{--} & \RESULT{--} & \RESULT{--} & \RESULT{--} & \RESULT{--} \\
+Frame BC & \RESULT{--} & \RESULT{--} & \RESULT{--} & \RESULT{--} & \RESULT{--} \\
+Layer~1 & \RESULT{--} & \RESULT{--} & \RESULT{--} & \RESULT{--} & \RESULT{--} \\
+Reactive vision & \RESULT{--} & \RESULT{--} & \RESULT{--} & \RESULT{--} & \RESULT{--} \\
+Layer~1+2 & \RESULT{--} & \RESULT{--} & \RESULT{--} & \RESULT{--} & \RESULT{--} \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\begin{table}[t]
+\caption{Ablation of Layer~2 Optimization}
+\label{tab:layer2}
+\centering\small
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{lcccc}
+\toprule
+Variant & Center error & Contacts & Max offset & Success \\
+\midrule
+Largest lumen & \RESULT{--} & \RESULT{--} & \RESULT{--} & \RESULT{--} \\
+Nearest lumen & \RESULT{--} & \RESULT{--} & \RESULT{--} & \RESULT{--} \\
++ dead-zone/EMA & \RESULT{--} & \RESULT{--} & \RESULT{--} & \RESULT{--} \\
++ progress weight & \RESULT{--} & \RESULT{--} & \RESULT{--} & \RESULT{--} \\
+Full bounded method & \RESULT{--} & \RESULT{--} & $\le5^\circ$ & \RESULT{--} \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\begin{table}[t]
+\caption{Mucus Intervention and Mission Continuity}
+\label{tab:layer3}
+\centering\small
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{lccccc}
+\toprule
+Method & Clear success & Clear time & Pose error & Continue success & Home error \\
+\midrule
+Manual suction & \RESULT{--} & \RESULT{--} & -- & \RESULT{--} & \RESULT{--} \\
+Tracking, no depth & \RESULT{--} & \RESULT{--} & \RESULT{--} & \RESULT{--} & \RESULT{--} \\
+Tracking + depth & \RESULT{--} & \RESULT{--} & \RESULT{--} & \RESULT{--} & \RESULT{--} \\
+Full Layer~3 & \RESULT{--} & \RESULT{--} & \RESULT{--} & \RESULT{--} & \RESULT{--} \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\begin{table}[t]
+\caption{Reinforcement-Learning Refinement}
+\label{tab:rl}
+\centering\small
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{lccc}
+\toprule
+Policy & Sim. success & Hardware success & Contact reduction \\
+\midrule
+Standalone prototype & 0\% & not tested & not established \\
+Bounded AutoNav PPO & \RESULT{--} & \RESULT{--} & \RESULT{--} \\
+\bottomrule
+\end{tabular}
+}
+\end{table}
+
+\begin{figure}[t]
+\centering
+\fbox{\parbox[c][4.3cm][c]{0.94\columnwidth}{\centering
+\textbf{FIGURE 8 PLACEHOLDER --- Final quantitative results}\\[1.5mm]
+Panel (a): route success by target and method with 95\% CI. Panel (b): paired
+center error and contact duration for Layer~1 vs Layer~1+2. Panel (c): mucus
+area/depth/centering through Layer~3. Panel (d): saved-pose error, continued
+route success and homing error. Panel (e): ablation waterfall.}}
+\caption{Required final system-level results and ablations.}
+\label{fig:results}
+\end{figure}
+
+\subsection{Software Verification}
+
+The earlier control revision passed 92 hardware-independent logical checks.
+The current anatomy-recognition interface additionally passes 20 logic tests
+covering motor-direction gating, stale feedback, paused-state evidence,
+anatomical topology, latest-frame transport, detection/recording separation,
+and navigation-menu behavior. Layer~2 also has dedicated finite-offset and
+long-duration tests; one source-consistency assertion currently expects an
+older vertical speed scale (4.0 rather than the tuned 2.0) and must be updated
+before the paper claims a fully clean regression suite. These checks are not
+physical trials and are excluded from efficacy statistics.
+
+\section{Discussion}
+
+The system's main novelty is not any single network, but authority-aware fusion.
+The GRU captures goal-conditioned temporal motor behavior; YOLO maintains
+anatomical context; U-Net and depth supply local therapeutic geometry; and
+Layer~2 inserts only a bounded correction whose strength depends on route
+progress and visual distance. This avoids two common failure modes: a local
+controller overriding the intended branch and a global controller ignoring
+current wall geometry.
+
+The current model evidence also reveals limitations. GRU task accuracy of 100\%
+may reflect an easy label distribution and needs macro-F1 and target-stratified
+testing. YOLO recall below 0.8 justifies temporal confirmation but may delay
+anatomical transitions. U-Net metrics and depth calibration are missing from
+the repository. Continuous suction reduces switching complexity but requires
+pressure, exposure, fluid-removal, and tissue-safety reporting. Finally, the
+standalone PPO run did not solve its evaluation task; reinforcement learning
+must not be credited with system improvement until the bounded AutoNav residual
+passes both simulation and hardware ablations.
+
+Future work will expand expert data to missing/rare goals, collect multi-operator
+demonstrations, train U-Net with hard negatives and temporal consistency,
+calibrate depth across airway materials, learn uncertainty-aware fusion, and
+evaluate on ex-vivo and in-vivo models. Clinical translation will additionally
+require sterility, suction-pressure safety, failure containment, and supervised
+human takeover protocols.
+
+\section{Conclusion}
+
+We introduced a progress-aware three-layer framework for autonomous robotic
+bronchoscopy. A goal-conditioned GRU learns temporal expert control; multimodal
+perception combines U-Net mucus masks, YOLO anatomical recognition, and Depth
+Anything geometry; a bounded progress-weighted visual controller improves
+junction centering; and continuous suction is integrated with mucus tracking,
+mission continuity, and homing. Saved artifacts provide quantitative GRU and
+YOLO evidence, while integrated trials establish qualitative feasibility of the
+complete procedure. The remaining tables explicitly define the quantitative
+evidence required for an IEEE RA-L submission.
+
+\bibliographystyle{IEEEtran}
+\bibliography{literature/refs_verified}
+\end{document}

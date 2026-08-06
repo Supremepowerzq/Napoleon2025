@@ -145,3 +145,110 @@
   booktitle = {International Conference on Learning Representations (ICLR)},
   year      = {2019},
 }
+
+% ── 2024-2026 同类工作（联网检索补充 2026-07-02）─────────────────
+
+@article{zhang2024aicopilot,
+  author    = {Jingyu Zhang and Lilu Liu and Pingyu Xiang and Qin Fang and Xiuping Nie and Honghai Ma and others},
+  title     = {{AI} co-pilot bronchoscope robot},
+  journal   = {Nature Communications},
+  volume    = {15},
+  number    = {241},
+  year      = {2024},
+  doi       = {10.1038/s41467-023-44385-7},
+  note      = {Sim2Real pretrain + DAgger; teleoperator with 5-region discrete commands}
+}
+
+@inproceedings{pore2024bronchocopilot,
+  author    = {Ameya Pore and Zhen Li and Diego Dall'Alba and others},
+  title     = {{BronchoCopilot}: Towards Autonomous Robotic Bronchoscopy via Multimodal Reinforcement Learning},
+  booktitle = {IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS)},
+  year      = {2024},
+  doi       = {10.1109/iros58592.2024.10802152},
+  note      = {Multimodal RL with image + robot pose, 90\% success on 5th-gen airways, simulation only}
+}
+
+@article{longshort2026,
+  author    = {Anonymous arXiv 2603.07909},
+  title     = {Long-Short Term Agents for Pure-Vision Bronchoscopy Robotic Autonomy},
+  journal   = {arXiv preprint arXiv:2603.07909},
+  year      = {2026},
+  note      = {Hierarchical vision-only long-term strategic + short-term reactive agents with world-model critic, evaluated in phantom, ex-vivo porcine, and live porcine. 80\% success to 8th generation ex-vivo.}
+}
+
+@article{dares2024,
+  author    = {Mobarakol Islam and others},
+  title     = {{DARES}: Depth Anything in Robotic Endoscopic Surgery with Self-supervised Vector-{LoRA} of the Foundation Model},
+  journal   = {arXiv preprint arXiv:2408.17433},
+  year      = {2024},
+  note      = {Self-supervised DAM-V2 adaptation for surgical endoscopy, 13.3\% improvement on SCARED AbsRel}
+}
+
+@article{endodac2024,
+  author    = {Beilei Cui and others},
+  title     = {{EndoDAC}: Efficient Adapting Foundation Model for Self-Supervised Depth Estimation from Any Endoscopic Camera},
+  journal   = {arXiv preprint arXiv:2405.08672},
+  year      = {2024},
+  note      = {Dynamic Vector-{LoRA} + convolutional neck blocks, camera-agnostic adaptation}
+}
+
+@inproceedings{monolot2024,
+  author    = {Yuxin Wu and others},
+  title     = {{MonoLoT}: Self-Supervised Monocular Depth Estimation in Low-Texture Scenes for Automatic Robotic Endoscopy},
+  booktitle = {International Conference on Medical Image Computing and Computer-Assisted Intervention (MICCAI)},
+  year      = {2024},
+  note      = {Point matching loss + batch shuffle, validated in digestive endoscopy visual servoing}
+}
+
+@article{li2024east,
+  author    = {Yehui Li and Wing Yin Ng and Yisen Huang and others},
+  title     = {Colon Lumen Center Detection Enables Autonomous Navigation of an Electromagnetically Actuated Soft-Tethered Colonoscope},
+  journal   = {IEEE Transactions on Instrumentation and Measurement},
+  year      = {2024},
+  doi       = {10.1109/tim.2024.3403172},
+  note      = {Deep-learning contour + darkest-region hybrid for lumen center, visual-servo control, real-time}
+}
+
+@article{li2024polyp,
+  author    = {Wing Yin Ng and Yehui Li and Tianle Pan and Yichong Sun and Qi Dou and Pheng Ann Heng and Philip Wai Yan Chiu and Zheng Li},
+  title     = {A Simultaneous Polyp and Lumen Detection Framework Towards Autonomous Robotic Colonoscopy},
+  journal   = {IEEE Transactions on Medical Robotics and Bionics},
+  volume    = {6},
+  number    = {1},
+  year      = {2024},
+  doi       = {10.1109/tmrb.2024.3349623},
+  note      = {Unified polyp + lumen detection for autonomous navigation and diagnosis}
+}
+
+@inproceedings{cho2024hysteresis,
+  author    = {Brian Y. Cho and Daniel S. Esser and Jordan Thompson and Bao Thach and Robert J. {Webster III} and Alan Kuntz},
+  title     = {Accounting for Hysteresis in the Forward Kinematics of Nonlinearly-Routed Tendon-Driven Continuum Robots via a Learned Deep Decoder Network},
+  booktitle = {IEEE Robotics and Automation Letters (RA-L)},
+  year      = {2024},
+  doi       = {10.1109/lra.2024.3455797},
+  note      = {Deep-decoder network conditioned on prior configurations for hysteresis-aware forward kinematics}
+}
+
+@inproceedings{lawson2024assembled,
+  author    = {Daniel J. Lawson and others},
+  title     = {Assembled Injection-Molded {Reconfigurable} Multi-Dof Bronchoscope},
+  booktitle = {IEEE International Conference on Robotics and Automation (ICRA)},
+  year      = {2024},
+  note      = {Patient-mounted modular bronchoscope design}
+}
+
+@inproceedings{pore2024hi,
+  author    = {Authors},
+  title     = {Safe navigation for robotic digestive endoscopy via human intervention-based reinforcement learning},
+  journal   = {Expert Systems with Applications},
+  year      = {2025},
+  note      = {HI-PPO combining behavioral cloning warm-start + human intervention signal}
+}
+
+@inproceedings{target2025,
+  author    = {{Johnson \& Johnson MedTech}},
+  title     = {{TARGET} study: {Transbronchial} Biopsy Assisted by Robot Guidance in the Evaluation of Tumors of the Lung},
+  journal   = {CHEST Journal},
+  year      = {2025},
+  note      = {Multicenter prospective: Monarch reaches lesion in 98.7\%, diagnostic yield 83.2\%}
+}

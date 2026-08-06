@@ -373,7 +373,7 @@ if __name__ == "__main__":
     if not os.path.exists(demo_dir):
         print(f"创建测试目录: {demo_dir}")
         os.makedirs(demo_dir)
-        print("请先用 data_collector.py 录制专家演示数据")
+        print("请先用 data_collector.py 采集专家演示数据")
     else:
         ds = BronchusDataset(demo_dir)
         print(f"Dataset 大小: {len(ds)}")

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-verify_demos.py — 录制质量检查工具
+verify_demos.py — 采集质量检查工具
 =====================================
 用法:
     python verify_demos.py              # 检查所有文件
@@ -21,7 +21,7 @@ from model import IDX_TO_YOLO, IDX_TO_NAME, BRONCHUS_PATHS, OBS_FIELDS
 DEMO_DIR = Path(__file__).parent / "expert_demos"
 # 深度特征名（13个视觉特征中，检测它们是否全零来判断感知是否生效）
 DEPTH_FIELDS  = ["depth_mean_mm", "depth_max_mm", "depth_center_mm"]
-VISUAL_FIELDS = ["bifur_cx", "bifur_area", "stone_detected"]
+VISUAL_FIELDS = ["bifur_cx", "bifur_area", "obstruction_detected"]
 
 
 def load_json(fpath):
@@ -81,7 +81,7 @@ def check_file(fpath, verbose=True):
         else:
             issues.append("⚠️  bifur_* 全为 0 → UNet 特征未写入，可能是摄像头未连接或感知未启动")
 
-    # 4. 动作多样性检查（避免录制了静止不动的数据）
+    # 4. 动作多样性检查（避免采集了静止不动的数据）
     import statistics as _st
     dm0 = [fr.get("delta_m0", 0.0) for fr in frames]
     dm1 = [fr.get("delta_m1", 0.0) for fr in frames]
@@ -90,11 +90,11 @@ def check_file(fpath, verbose=True):
     std1 = _st.pstdev(dm1) if len(dm1) > 1 else 0.0
     std2 = _st.pstdev(dm2) if len(dm2) > 1 else 0.0
     if std0 < 0.01 and std1 < 0.01 and std2 < 0.01:
-        issues.append("⚠️  三轴动作标准差均 < 0.01°，疑似录制了静止片段（未操作手柄？）")
+        issues.append("⚠️  三轴动作标准差均 < 0.01°，疑似采集了静止片段（未操作手柄？）")
 
     # 5. 路径标签检查
     if path_label == 0:
-        issues.append("路径标签为 EXP（自主探索），确认是否故意录制探索类演示")
+        issues.append("路径标签为 EXP（自主探索），确认是否故意采集探索类演示")
 
     ok = len(issues) == 0 or (len(issues) == 1 and "EXP" in issues[0])
 
@@ -127,7 +127,7 @@ def cmd_check(args):
     files = sorted(DEMO_DIR.glob("*.json"))
     if not files:
         print(f"暂无演示文件: {DEMO_DIR}")
-        print("请先在主程序 UI 中点「开始录制」")
+        print("请先在主程序 UI 中点「开始采集」")
         return
 
     # 过滤
@@ -223,10 +223,10 @@ def cmd_plot(args):
 
 
 def main():
-    p = argparse.ArgumentParser(description="BC 演示录制质量检查工具")
+    p = argparse.ArgumentParser(description="BC 演示采集质量检查工具")
     sub = p.add_subparsers(dest="cmd")
 
-    ck = sub.add_parser("check", help="检查录制质量（默认命令）")
+    ck = sub.add_parser("check", help="检查采集质量（默认命令）")
     ck.add_argument("--last", type=int, default=0, help="只显示最新N条")
     ck.add_argument("--path", default="", help="按YOLO路径代码过滤，如 LMB / RMB")
 

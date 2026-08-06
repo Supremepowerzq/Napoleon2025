@@ -31,6 +31,27 @@ except Exception as _bc_e:
     _bc_update_vis = None
     _BC_VIS_AVAILABLE = False
 
+# 电机反馈联动的支气管状态机。只消费主程序发布的缓存快照，不访问串口。
+try:
+    from Bronchialtree_identification.motor_linked_detection import (
+        BronchusDetectionCoordinator as _BronchusDetectionCoordinator,
+        DEFAULT_MODEL_PATH as _BRONCH_DEPLOY_MODEL_PATH,
+        DEFAULT_UNDISTORT_MAP_PATH as _BRONCH_DEPLOY_UNDISTORT_PATH,
+        to_legacy_label as _bronch_to_legacy_label,
+    )
+    _MOTOR_LINKED_BRONCH_AVAILABLE = True
+except Exception as _motor_bronch_exc:
+    _BronchusDetectionCoordinator = None
+    _BRONCH_DEPLOY_MODEL_PATH = Path(
+        r"G:\zck\yolov11\runs\train\yolo11_4-14_2_weak_aug\weights\best.pt"
+    )
+    _BRONCH_DEPLOY_UNDISTORT_PATH = Path(
+        r"G:\wqx\fisheye\zhiqiguanqujibian\undistort_maps_zhiqiguan_roi.npz"
+    )
+    _bronch_to_legacy_label = lambda label: label
+    _MOTOR_LINKED_BRONCH_AVAILABLE = False
+    print(f"[BronchState] 电机联动模块导入失败，使用旧筛选器: {_motor_bronch_exc}")
+
 # ============================================================
 # Depth-Anything-V2 Metric 版本导入
 # ============================================================
@@ -103,7 +124,7 @@ class UnetPackage:
         # depth_weight_path=r"E:\zq\TJU\Depth-Anything-V2-main\checkpoints\depth_anything_v2_metric_hypersim_vitl.pth",
         # # depth_weight_path=r"E:\zq\TJU\Depth-Anything-V2-main\checkpoints\kidney_dav2_best.pth",
         #此处为台式机路径
-        undistort_maps_path=r"G:\wqx\fisheye\zhiqiguanqujibian\undistort_maps_zhiqiguan_roi.npz",
+        undistort_maps_path=str(_BRONCH_DEPLOY_UNDISTORT_PATH),
         depth_weight_path=r"G:\zq\Depth-Anything-V2-main\checkpoints\depth_anything_v2_metric_hypersim_vitl.pth",
         # depth_weight_path=r"E:\zq\TJU\Depth-Anything-V2-main\checkpoints\kidney_dav2_best.pth",
         # 深度标定参数
@@ -202,11 +223,11 @@ class UnetPackage:
         # 上一帧按下的key，用于检测"新按下"（避免按住不放时自动循环）
         self._prev_key = -1
 
-        # 腔道岔口深度状态（独立于结石深度）
+        # 腔道岔口深度状态（独立于阻塞物深度）
         self._cav_depth_prev_mm = None
         self._cav_depth_filt_mm = None
 
-        # 追踪模式：1=结石追踪, 2=岔道追踪, 3=优先结石混合追踪
+        # 追踪模式：1=阻塞物追踪, 2=岔道追踪, 3=优先阻塞物混合追踪
         self._track_mode = 1
 
         # 支气管树 YOLO 识别
@@ -214,11 +235,17 @@ class UnetPackage:
         self._bronch_current_position = 'TR'
         self._bronch_confirm_count = {}
         self._bronch_last_confirmed = 'TR'
+        self._bronch_last_state = None
+        self._bronch_state_coordinator = (
+            _BronchusDetectionCoordinator()
+            if _MOTOR_LINKED_BRONCH_AVAILABLE and _BronchusDetectionCoordinator is not None
+            else None
+        )
         self._bronch_frame_count = 0      # 用于跳帧推理（每5帧跑一次YOLO）
         self._bronch_map_cache = None     # 地图图像缓存
         self._bronch_map_last_pos = None  # 缓存对应的位置
         self._bronch_map_dirty = False    # 标记地图需要在非YOLO帧重渲染
-        _bronch_model_path = r'G:\zck\yolov11\runs\train\yolo11_4-14_2_weak_aug\weights\best.pt'
+        _bronch_model_path = str(_BRONCH_DEPLOY_MODEL_PATH)
         if os.path.exists(_bronch_model_path):
             try:
                 self._bronch_model = YOLO(_bronch_model_path, task='detect')
@@ -578,7 +605,7 @@ class UnetPackage:
         """视频流实时推理：UNet分割 + Metric深度估计 + 速度控制"""
         lower_green0 = np.array([76, 46, 28])   # 导管颜色 HSV
         upper_green0 = np.array([98, 255, 255])
-        lower_green = np.array([98, 157, 88])    # 结石颜色 HSV
+        lower_green = np.array([98, 157, 88])    # 阻塞物颜色 HSV
         upper_green = np.array([125, 255, 255])
 
         # 检查去畸变maps是否可用
@@ -697,8 +724,13 @@ class UnetPackage:
                         (6, _bh - 34), cv2.FONT_HERSHEY_DUPLEX,
                         0.55, (0, 200, 255), 1, cv2.LINE_AA)
             if _bronch_conf_display is not None:
+                _bronch_detail = f"Conf: {_bronch_conf_display:.2f}"
+                if self._bronch_last_state is not None:
+                    _gate_phase = self._bronch_last_state.gate.phase
+                    if _gate_phase != "INACTIVE":
+                        _bronch_detail += f"  {_gate_phase}"
                 cv2.putText(circular_original,
-                            f"Conf: {_bronch_conf_display:.2f}",
+                            _bronch_detail,
                             (6, _bh - 10), cv2.FONT_HERSHEY_DUPLEX,
                             0.45, (0, 200, 255), 1, cv2.LINE_AA)
 
@@ -737,7 +769,7 @@ class UnetPackage:
             fps = (fps + (1. / (time.time() - t1))) / 2
 
             # ============================================================
-            # Step 5: HSV颜色分割 - 导管与结石（使用UNet结果进行分割）
+            # Step 5: HSV颜色分割 - 导管与阻塞物（使用UNet结果进行分割）
             # ============================================================
             hsv = cv2.cvtColor(frame_unet_output, cv2.COLOR_BGR2HSV)
             mask1 = cv2.inRange(hsv, lower_green0, upper_green0)
@@ -771,7 +803,7 @@ class UnetPackage:
             # 导管仅用于确定末端位置，不绘制轮廓
 
             # ============================================================
-            # Step 7: 结石轮廓处理 - 找最大轮廓，计算质心，绘制（与predict_2026.py一致）
+            # Step 7: 阻塞物轮廓处理 - 找最大轮廓，计算质心，绘制（与predict_2026.py一致）
             # ============================================================
             max_area = 0.0
             max_num = 0
@@ -784,7 +816,7 @@ class UnetPackage:
                         max_area = c
                         max_num = i
 
-                # 计算结石面积占比
+                # 计算阻塞物面积占比
                 percentage1 = (max_area / total_pixels) * 100
 
                 # 只有当最大轮廓面积超过阈值时才认为检测到有效目标
@@ -812,17 +844,17 @@ class UnetPackage:
             # 文字显示已移除，避免被圆形掩膜遮挡
 
             # ============================================================
-            # Step 9: 结石深度估计
+            # Step 9: 阻塞物深度估计
             # ============================================================
-            stone_has_target = len(contours2) > 0 and max_area > min_contour_area
-            stone_z_ok = False
+            obstruction_has_target = len(contours2) > 0 and max_area > min_contour_area
+            obstruction_z_ok = False
 
-            if stone_has_target and depth_m is not None:
-                stone_mask = np.zeros((h, w), dtype=np.uint8)
-                cv2.drawContours(stone_mask, [contours2[max_num]], -1, 255,
+            if obstruction_has_target and depth_m is not None:
+                obstruction_mask = np.zeros((h, w), dtype=np.uint8)
+                cv2.drawContours(obstruction_mask, [contours2[max_num]], -1, 255,
                                  thickness=cv2.FILLED, lineType=cv2.LINE_AA)
-                stone_mask = (stone_mask * self.circle_mask).astype(np.uint8)
-                Z_pred_m, inlier = self.robust_depth_from_mask(depth_m, stone_mask, erode_r=3)
+                obstruction_mask = (obstruction_mask * self.circle_mask).astype(np.uint8)
+                Z_pred_m, inlier = self.robust_depth_from_mask(depth_m, obstruction_mask, erode_r=3)
 
                 if Z_pred_m is not None:
                     Z_pred_mm = Z_pred_m * 1000.0
@@ -830,12 +862,12 @@ class UnetPackage:
 
                     if (self.depth_min_mm <= Z_mm <= self.depth_max_mm) and (inlier >= self.inlier_min):
                         if self.depth_prev_mm is None or abs(Z_mm - self.depth_prev_mm) <= self.depth_jump_mm:
-                            stone_z_ok = True
+                            obstruction_z_ok = True
                         else:
                             Z_mm = self.depth_prev_mm
-                            stone_z_ok = True
+                            obstruction_z_ok = True
 
-                    if stone_z_ok:
+                    if obstruction_z_ok:
                         self.depth_prev_mm = Z_mm
                         if self.depth_filt_mm is None:
                             self.depth_filt_mm = Z_mm
@@ -844,38 +876,38 @@ class UnetPackage:
 
                         _z = self.depth_filt_mm
                         if _z >= self.depth_advance_mm:
-                            stone_speed_FR = safe_max_forward
+                            obstruction_speed_FR = safe_max_forward
                         elif _z <= self.depth_reverse_mm:
                             # 过近：后退（速度为前进最大值的50%）
-                            stone_speed_FR = -int(safe_max_forward * 0.5)
+                            obstruction_speed_FR = -int(safe_max_forward * 0.5)
                         elif _z <= self.depth_stop_mm:
                             # 后退区到停止区：线性从 -50%→0
                             t = (_z - self.depth_reverse_mm) / (self.depth_stop_mm - self.depth_reverse_mm)
-                            stone_speed_FR = -int(safe_max_forward * 0.5 * (1.0 - t))
+                            obstruction_speed_FR = -int(safe_max_forward * 0.5 * (1.0 - t))
                         else:
                             # 停止区到前进区：线性从 0→满速
-                            stone_speed_FR = int(safe_max_forward * (
+                            obstruction_speed_FR = int(safe_max_forward * (
                                 _z - self.depth_stop_mm) / (
                                 self.depth_advance_mm - self.depth_stop_mm))
 
-                        stone_depth_info = {
+                        obstruction_depth_info = {
                             'z_ok': True, 'z_mm': Z_mm,
                             'z_filt': self.depth_filt_mm,
-                            'inlier': inlier, 'speed_FR': stone_speed_FR
+                            'inlier': inlier, 'speed_FR': obstruction_speed_FR
                         }
                     else:
-                        stone_speed_FR = 0
-                        stone_depth_info = {
+                        obstruction_speed_FR = 0
+                        obstruction_depth_info = {
                             'z_ok': False, 'z_mm': 0, 'z_filt': 0, 'inlier': 0, 'speed_FR': 0
                         }
                 else:
-                    stone_speed_FR = 0
-                    stone_depth_info = {
+                    obstruction_speed_FR = 0
+                    obstruction_depth_info = {
                         'z_ok': False, 'z_mm': 0, 'z_filt': 0, 'inlier': 0, 'speed_FR': 0
                     }
             else:
-                stone_speed_FR = 0
-                stone_depth_info = {
+                obstruction_speed_FR = 0
+                obstruction_depth_info = {
                     'z_ok': False, 'z_mm': 0, 'z_filt': 0, 'inlier': 0, 'speed_FR': 0
                 }
 
@@ -910,19 +942,19 @@ class UnetPackage:
             # ============================================================
             # Step 10b: 模式选择 → 计算最终速度 + 方向指示圆
             # ============================================================
-            # 模式1：结石追踪
+            # 模式1：阻塞物追踪
             # 模式2：岔道追踪
-            # 模式3：优先结石混合追踪（有结石→结石；无结石→岔道）
+            # 模式3：优先阻塞物混合追踪（有阻塞物→阻塞物；无阻塞物→岔道）
             red_left = red_right = red_up = red_down = False
-            active_depth_info = stone_depth_info
+            active_depth_info = obstruction_depth_info
 
             if self._track_mode == 1:
-                # 模式1：结石追踪
-                if stone_has_target:
-                    vx, vy, rl, rr, ru, rd = self._calc_stone_velocity(
+                # 模式1：阻塞物追踪
+                if obstruction_has_target:
+                    vx, vy, rl, rr, ru, rd = self._calc_obstruction_velocity(
                         cx, cy, center_x, center_y, safe_max_forward)
-                    speed_FR = stone_speed_FR
-                    active_depth_info = stone_depth_info
+                    speed_FR = obstruction_speed_FR
+                    active_depth_info = obstruction_depth_info
                     red_left, red_right, red_up, red_down = rl, rr, ru, rd
                 else:
                     speed_FR = 0
@@ -930,7 +962,7 @@ class UnetPackage:
                     vy = 0.0
 
             elif self._track_mode == 2:
-                # 模式2：岔道追踪（无视结石）
+                # 模式2：岔道追踪（无视阻塞物）
                 # 方向控制(vx/vy/指示圆)只需l_cx存在；前进速度仍需z_ok
                 if l_cx is not None:
                     vx = cav_vx
@@ -950,12 +982,12 @@ class UnetPackage:
                     vy = 0.0
 
             else:  # mode == 3
-                # 模式3：优先结石混合追踪
-                if stone_has_target and stone_depth_info['z_ok']:
-                    vx, vy, rl, rr, ru, rd = self._calc_stone_velocity(
+                # 模式3：优先阻塞物混合追踪
+                if obstruction_has_target and obstruction_depth_info['z_ok']:
+                    vx, vy, rl, rr, ru, rd = self._calc_obstruction_velocity(
                         cx, cy, center_x, center_y, safe_max_forward)
-                    speed_FR = stone_speed_FR
-                    active_depth_info = stone_depth_info
+                    speed_FR = obstruction_speed_FR
+                    active_depth_info = obstruction_depth_info
                     red_left, red_right, red_up, red_down = rl, rr, ru, rd
                 elif l_cx is not None:
                     # 方向控制不依赖z_ok，前进速度仍需z_ok
@@ -992,10 +1024,10 @@ class UnetPackage:
                     _w2 = w / 2.0  # 归一化用的半宽/半高
                     _h2 = h / 2.0
 
-                    # ── 结石特征 ─────────────────────────────────────────
-                    _s_cx   = (cx - center_x) / _w2 if stone_has_target else 0.0
-                    _s_cy   = (cy - center_y) / _h2 if stone_has_target else 0.0
-                    _s_area = min(max_area / (w * h), 1.0) if stone_has_target else 0.0
+                    # ── 阻塞物特征 ─────────────────────────────────────────
+                    _s_cx   = (cx - center_x) / _w2 if obstruction_has_target else 0.0
+                    _s_cy   = (cy - center_y) / _h2 if obstruction_has_target else 0.0
+                    _s_area = min(max_area / (w * h), 1.0) if obstruction_has_target else 0.0
 
                     # ── 岔口特征（始终取最大腔道，与 _cav_highlight_idx UI 状态无关）
                     _b_cx = _b_cy = _b_area = 0.0
@@ -1040,10 +1072,10 @@ class UnetPackage:
                         _pr_mm = _path_depth(2)
 
                     _bc_update_vis(
-                        stone_cx        = float(_s_cx),
-                        stone_cy        = float(_s_cy),
-                        stone_area      = float(_s_area),
-                        stone_detected  = bool(stone_has_target),
+                        obstruction_cx        = float(_s_cx),
+                        obstruction_cy        = float(_s_cy),
+                        obstruction_area      = float(_s_area),
+                        obstruction_detected  = bool(obstruction_has_target),
                         bifur_cx        = float(_b_cx),
                         bifur_cy        = float(_b_cy),
                         bifur_area      = float(_b_area),
@@ -1059,9 +1091,9 @@ class UnetPackage:
             # ============================================================
 
             # ============================================================
-            # Step 11: 绘制结石和腔道轮廓
+            # Step 11: 绘制阻塞物和腔道轮廓
             # ============================================================
-            # 结石轮廓（全部）
+            # 阻塞物轮廓（全部）
             if len(contours2) > 0:
                 for idx, cnt in enumerate(contours2):
                     area = cv2.contourArea(cnt)
@@ -1117,7 +1149,7 @@ class UnetPackage:
                 red_circle_indices.append(0)   # Dy>0 → target above → 上圆
 
             # 模式名称
-            mode_names = {1: "Mode-1: Stone Tracking",
+            mode_names = {1: "Mode-1: Obstruction Tracking",
                           2: "Mode-2: Cavity Tracking",
                           3: "Mode-3: Hybrid Tracking"}
             mode_label = mode_names.get(self._track_mode, "Mode-?: Unknown")
@@ -1143,11 +1175,11 @@ class UnetPackage:
                 cv2.circle(circular_unet, dc, 8, dc_color, -1, cv2.LINE_AA)
 
             # 深度窗口（去畸变后矩形深度图，直接叠加信息）
-            depth_with_stone = depth_vis.copy()
-            if stone_has_target:
-                cv2.drawContours(depth_with_stone, contours2[max_num], -1, (255, 255, 255), 3, cv2.LINE_AA)
-                cv2.circle(depth_with_stone, (cx, cy), 20, (255, 255, 255), -1, cv2.LINE_AA)
-            circular_depth = depth_with_stone.copy()
+            depth_with_obstruction = depth_vis.copy()
+            if obstruction_has_target:
+                cv2.drawContours(depth_with_obstruction, contours2[max_num], -1, (255, 255, 255), 3, cv2.LINE_AA)
+                cv2.circle(depth_with_obstruction, (cx, cy), 20, (255, 255, 255), -1, cv2.LINE_AA)
+            circular_depth = depth_with_obstruction.copy()
             if active_depth_info.get('z_ok', False):
                 cv2.putText(circular_depth, f"Zcal={active_depth_info['z_mm']:.1f}mm", (w - 190, 24),
                             cv2.FONT_HERSHEY_DUPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
@@ -1250,7 +1282,7 @@ class UnetPackage:
             # 按 1/2/3 键切换追踪模式
             if c in (ord('1'), ord('2'), ord('3')) and c != self._prev_key:
                 self._track_mode = c - ord('0')
-                mode_names = {1: "Mode-1: Stone Tracking",
+                mode_names = {1: "Mode-1: Obstruction Tracking",
                               2: "Mode-2: Cavity Tracking",
                               3: "Mode-3: Hybrid Tracking"}
                 cv2.setWindowTitle("Combined View: Original | UNet | Depth | 3D PointCloud",
@@ -1286,11 +1318,11 @@ class UnetPackage:
             out.release()
         cv2.destroyAllWindows()
 
-    def _calc_stone_velocity(self, cx, cy, center_x, center_y, safe_max_forward=80):
+    def _calc_obstruction_velocity(self, cx, cy, center_x, center_y, safe_max_forward=80):
         """
-        结石追踪速度计算：
-        - 结石质心与画面中心偏移 → vx, vy（转向速度）
-        - 结石质心深度值 → speed_FR（前进速度）
+        阻塞物追踪速度计算：
+        - 阻塞物质心与画面中心偏移 → vx, vy（转向速度）
+        - 阻塞物质心深度值 → speed_FR（前进速度）
         返回 (speed_FR, vx, vy, depth_info, red_left, red_right, red_up, red_down)
         """
         Dx = center_x - cx
@@ -1385,9 +1417,9 @@ class UnetPackage:
 
     def _calc_cav_velocity(self, l_cx, l_cy, frame_w, frame_h, depth_m):
         """
-        腔道岔口速度计算（独立于结石控制）：
-        - 岔口中心点深度值决定前进速度（与结石深度逻辑相同）
-        - 岔口中心点偏移决定转向速度（与结石偏移逻辑相同）
+        腔道岔口速度计算（独立于阻塞物控制）：
+        - 岔口中心点深度值决定前进速度（与阻塞物深度逻辑相同）
+        - 岔口中心点偏移决定转向速度（与阻塞物偏移逻辑相同）
         返回 (speed_FR, vx, vy, cav_depth_info)
         """
         cav_vx = 0.0
@@ -1536,6 +1568,14 @@ class UnetPackage:
         - 减少了单帧最高置信度强制主导的问题
         - 同时处理所有有效候选的计数
         """
+        if self._bronch_state_coordinator is not None:
+            state = self._bronch_state_coordinator.update(raw_detections or [])
+            self._bronch_last_state = state
+            legacy_position = _bronch_to_legacy_label(state.confirmed_position)
+            self._bronch_current_position = legacy_position
+            self._bronch_last_confirmed = legacy_position
+            return legacy_position, state.observed_confidence
+
         if not raw_detections:
             return None, None
 
@@ -1588,6 +1628,9 @@ class UnetPackage:
 
     def _bronch_reset_state_machine(self):
         """重置支气管树状态机到初始位置"""
+        if self._bronch_state_coordinator is not None:
+            self._bronch_state_coordinator.reset()
+            self._bronch_last_state = None
         self._bronch_current_position = 'TR'
         self._bronch_confirm_count = {}
         self._bronch_last_confirmed = 'TR'
@@ -2011,7 +2054,7 @@ class UnetPackage:
                     view[sy+1, sx] = np.clip(color, 0, 255).astype(np.uint8)
                     view[sy, sx+1] = np.clip(color, 0, 255).astype(np.uint8)
 
-        # 第三步：绘制结石轮廓（应用相同的视角变换）
+        # 第三步：绘制阻塞物轮廓（应用相同的视角变换）
         if len(contours2) > 0 and max_num >= 0:
             try:
                 contour = contours2[max_num]

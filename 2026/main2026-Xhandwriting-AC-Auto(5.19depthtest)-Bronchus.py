@@ -50,6 +50,17 @@ from config import BAUDRATE, TIMEOUT, get_config
 UnetPackage = None
 from ActionRecorder import ActionRecorder, ActionPlayer, PlaybackState
 
+# AutoNav 模块：支气管自主巡检（三层架构：序列回放 + 岔口引导 + 阻塞物清除）
+try:
+    from AutoNav import AutoNavController as _AutoNavController
+    from AutoNav.config import PLAYBACK_SPEED as _AUTONAV_DEFAULT_SPEED
+    _AUTONAV_AVAILABLE = True
+except Exception as _an_exc:
+    _AutoNavController = None
+    _AUTONAV_DEFAULT_SPEED = 0.33
+    _AUTONAV_AVAILABLE = False
+    print(f"[AutoNav] 导入失败: {_an_exc}")
+
 # BC 模块：专家演示数据采集（含视觉特征+速度+dt）
 try:
     import sys as _sys, os as _os
@@ -65,6 +76,17 @@ except Exception as _bc_exc:
     _BC_NAMES = {}
     YOLO_CODE_TO_IDX = {}
     print(f"[BC] 导入失败（不影响正常运行）: {_bc_exc}")
+
+# 支气管部位检测只读适配器：发布已有电机缓存，不创建第二套串口/手柄。
+try:
+    from Bronchialtree_identification.motor_linked_detection import (
+        NapoleonMotorFeedbackAdapter as _NapoleonMotorFeedbackAdapter,
+    )
+    _MOTOR_LINKED_BRONCH_AVAILABLE = True
+except Exception as _bronch_link_exc:
+    _NapoleonMotorFeedbackAdapter = None
+    _MOTOR_LINKED_BRONCH_AVAILABLE = False
+    print(f"[BronchState] 电机反馈适配器导入失败（不影响原控制）: {_bronch_link_exc}")
 
 # 电机控制参数
 FORWARD_COEFF = 100  # 前进/后退速度系数
@@ -1835,6 +1857,11 @@ class VisionRobotStateMachine:
 
         self.ser = serial.Serial(port, baudrate=BAUDRATE, timeout=TIMEOUT)
         self.motors = MotorGroup2025(self.ser)
+        self.bronchus_motor_adapter = (
+            _NapoleonMotorFeedbackAdapter()
+            if _MOTOR_LINKED_BRONCH_AVAILABLE and _NapoleonMotorFeedbackAdapter is not None
+            else None
+        )
 
         self.shutdown_event = threading.Event()
         self.ui_command_queue: "queue.Queue[Tuple[str, str]]" = queue.Queue()
@@ -1864,6 +1891,9 @@ class VisionRobotStateMachine:
         # BCRunner 懒加载（第一次进入 AIAuto 时初始化）
         self._bc_runner: Optional[Any] = None
         self._bc_goal_id: int = 3  # 默认 RMB 右主支气管
+
+        # AutoNav 控制器（第一次进入 AIAuto 时初始化，复用 goal_id）
+        self._autonav: Optional[Any] = None
 
         # AI巡检控制参数
         self._ai_frame_counter: int = 0          # 限频计数器（每3帧发一次串口指令）
@@ -2156,10 +2186,10 @@ class VisionRobotStateMachine:
 
     def loop_ai_auto(self) -> None:
         """
-        AI 自主巡检模式：
-          - 手柄 START / 语音"停止" → 退出到空闲
-          - 手柄 B               → 退出到空闲
-          - BCRunner 每帧推理输出电机增量
+        AI 自主巡检模式（AutoNav 序列回放版）：
+          - 手柄 START / B / LB → 退出到空闲
+          - AutoNavController 每帧输出电机目标（M0/M1/M2）
+          - 集成 Layer1 序列回放 + Layer2 岔口引导 + Layer3 阻塞物清除
         """
         # 退出条件：START / B / LB 均可停止
         if (self._controller_button_pressed('START')
@@ -2167,141 +2197,175 @@ class VisionRobotStateMachine:
                 or self._controller_button_pressed('LB')):
             if self.voice_window:
                 self.voice_window.push_log("[AI] 手柄停止 → 回到空闲")
+            self._stop_autonav()
             self._transition_to_idle()
-            if self._bc_runner is not None:
-                self._bc_runner.reset()
             return
 
         # BC 采集（AI运动期间也可录制用于 DAgger）
         if self.bc_collector is not None and self.bc_collector.is_recording:
             self.bc_collector.collect_frame()
 
-        # 懒加载 BCRunner
-        if self._bc_runner is None:
+        # 懒加载 AutoNavController（替换原 BCRunner）
+        if self._autonav is None:
             import os as _os2
-            ckpt = _os2.path.join(_os2.path.dirname(__file__), "BC", "checkpoints", "bc_best.pth")
-            if not _os2.path.exists(ckpt):
+            demo_dir = _os2.path.join(_os2.path.dirname(__file__), "BC", "expert_demos")
+            if not _os2.path.exists(demo_dir):
                 if self.voice_window:
-                    self.voice_window.push_log(f"[AI] 模型未找到: {ckpt}")
-                    self.voice_window.push_log("[AI] 请先运行: python bc_main.py train")
+                    self.voice_window.push_log(f"[AI] 演示目录不存在: {demo_dir}")
+                    self.voice_window.push_log("[AI] 请先在 manual 模式下录制若干演示")
+                self._transition_to_idle()
+                return
+            if not _AUTONAV_AVAILABLE:
+                if self.voice_window:
+                    self.voice_window.push_log("[AI] AutoNav 模块未加载")
                 self._transition_to_idle()
                 return
             try:
-                from BC.inference import BCRunner
-                self._bc_runner = BCRunner(
-                    model_path          = ckpt,
-                    goal_id             = self._bc_goal_id,
-                    action_scale_factor = 0.8,
+                # 记录当前实际电机位置作为序列起点
+                try:
+                    _cur = self.motors.get_cached_angles()
+                    start_angles = (float(_cur[0]), float(_cur[1]), float(_cur[2]))
+                except Exception:
+                    start_angles = (0.0, 0.0, 0.0)
+                self._autonav = _AutoNavController(
+                    demo_dir    = demo_dir,
+                    motor_group = self.motors,
+                )
+                self._autonav.start(
+                    path_label           = self._bc_goal_id,
+                    current_motor_angles = start_angles,
                 )
                 goal_name = _BC_NAMES.get(self._bc_goal_id, "?")
                 if self.voice_window:
                     self.voice_window.push_log(
-                        f"[AI] 策略已加载 → 目标: {_BC_PATHS.get(self._bc_goal_id, ('?','?'))[0]} {goal_name}"
+                        f"[AI] AutoNav 启动 → 目标: {_BC_PATHS.get(self._bc_goal_id, ('?','?'))[0]} {goal_name}"
                     )
-                    self.voice_window.push_log(f"[AI] 动作缩放 scale={self._bc_runner._scale:.1f}")
+                    self.voice_window.push_log(
+                        f"[AI] 速度缩放 PLAYBACK_SPEED={_AUTONAV_DEFAULT_SPEED}（录制 20Hz, 主循环 60Hz）"
+                    )
             except Exception as e:
                 if self.voice_window:
-                    self.voice_window.push_log(f"[AI] 加载失败: {e}")
+                    self.voice_window.push_log(f"[AI] AutoNav 初始化失败: {e}")
                 import traceback
-                print(f"[AI] 加载失败详情:\n{traceback.format_exc()}")
+                print(f"[AI] AutoNav 初始化详情:\n{traceback.format_exc()}")
                 self._transition_to_idle()
                 return
 
-        # 推理一步
-        try:
-            decision = self._bc_runner.step(self.motors)
-        except Exception as e:
-            if self.voice_window:
-                self.voice_window.push_log(f"[AI] 推理异常: {e}")
-            import traceback
-            print(f"[AI] 推理异常详情:\n{traceback.format_exc()}")
-            self._transition_to_idle()
-            return
-
-        # 获取当前角度用于计算增量（调试显示）
+        # 读取当前电机角度
         try:
             _cur = self.motors.get_cached_angles()
             _cur0, _cur1, _cur2 = float(_cur[0]), float(_cur[1]), float(_cur[2])
-            _dm0 = decision.new_m0 - _cur0
-            _dm1 = decision.new_m1 - _cur1
-            _dm2 = decision.new_m2 - _cur2
         except Exception:
             _cur0 = _cur1 = _cur2 = 0.0
-            _dm0 = _dm1 = _dm2 = 0.0
+
+        # AutoNav 单步推理
+        try:
+            vis = _bc_update_vis() if _bc_update_vis else {}
+            decision = self._autonav.step(
+                motor_angles = (_cur0, _cur1, _cur2),
+                visual       = vis,
+            )
+        except Exception as e:
+            if self.voice_window:
+                self.voice_window.push_log(f"[AI] AutoNav 推理异常: {e}")
+            import traceback
+            print(f"[AI] AutoNav 推理详情:\n{traceback.format_exc()}")
+            self._stop_autonav()
+            self._transition_to_idle()
+            return
 
         # ── 停止条件检查 ────────────────────────────────────────
-        # 1) M0 目标到达设定阈值（视为已进入目标支气管）
-        if decision.new_m0 <= self._AI_M0_STOP_DEG:
+        # 1) 序列播放完毕（DONE）
+        if not decision.active or decision.mode.value == "done":
             if self.voice_window:
                 self.voice_window.push_log(
-                    f"[AI] M0到达 {decision.new_m0:.1f}° → 巡检完成，停止")
+                    f"[AI] AutoNav 已到达目标部位 (步 {decision.step}/{decision.total_steps}) → 巡检完成"
+                )
+            self._stop_autonav()
             self._transition_to_idle()
-            if self._bc_runner is not None:
-                self._bc_runner.reset()
             return
-        # 2) 超过最大步数
-        if decision.step_count >= self._AI_MAX_STEPS:
+        # 2) M0 目标到达设定阈值（视为已进入目标支气管）
+        if decision.target_m0 <= self._AI_M0_STOP_DEG:
             if self.voice_window:
                 self.voice_window.push_log(
-                    f"[AI] 已达最大步数 {self._AI_MAX_STEPS} → 停止")
+                    f"[AI] M0 到达 {decision.target_m0:.1f}° → 巡检完成，停止"
+                )
+            self._stop_autonav()
             self._transition_to_idle()
-            if self._bc_runner is not None:
-                self._bc_runner.reset()
+            return
+        # 3) 超过最大步数
+        if decision.step >= self._AI_MAX_STEPS:
+            if self.voice_window:
+                self.voice_window.push_log(
+                    f"[AI] 已达最大步数 {self._AI_MAX_STEPS} → 停止"
+                )
+            self._stop_autonav()
+            self._transition_to_idle()
             return
 
-        # 前10步在控制台打印诊断
-        if decision.step_count <= 10:
-            raw = decision.raw_action
-            print(f"[AI步{decision.step_count}] cur=({_cur0:.1f},{_cur1:.1f},{_cur2:.1f}) "
-                  f"raw=[{raw[0]:.3f},{raw[1]:.3f},{raw[2]:.3f}] "
-                  f"target=({decision.new_m0:.2f},{decision.new_m1:.2f},{decision.new_m2:.2f}) "
-                  f"Δ=({_dm0:.2f},{_dm1:.2f},{_dm2:.2f})")
+        # 前 10 步在控制台打印诊断
+        if decision.step <= 10:
+            print(f"[AI步{decision.step}] cur=({_cur0:.1f},{_cur1:.1f},{_cur2:.1f}) "
+                  f"target=({decision.target_m0:.2f},{decision.target_m1:.2f},{decision.target_m2:.2f}) "
+                  f"mode={decision.mode.value} Δ=({decision.delta_m0:.2f},{decision.delta_m1:.2f},{decision.delta_m2:.2f})"
+                  f"{' obs' if decision.obstruction_detected else ''}")
 
         # ── 限频发送电机指令（每 _AI_CMD_INTERVAL 帧发一次，约20Hz）──
         self._ai_frame_counter += 1
         if self._ai_frame_counter % self._AI_CMD_INTERVAL == 0:
             m0_ok = True
             try:
-                self.motors.set_motor_position(0, decision.new_m0, max_speed=20.0)
+                self.motors.set_motor_position(0, decision.target_m0, max_speed=20.0)
             except Exception:
                 m0_ok = False
             try:
-                self.motors.set_motor_position(1, decision.new_m1, max_speed=12.0)
+                self.motors.set_motor_position(1, decision.target_m1, max_speed=12.0)
             except Exception:
                 pass
             try:
-                self.motors.set_motor_position(2, decision.new_m2, max_speed=12.0)
+                self.motors.set_motor_position(2, decision.target_m2, max_speed=12.0)
             except Exception:
                 pass
 
-            # M0连续串口失败自动退出
+            # M0 连续串口失败自动退出
             if not m0_ok:
                 self._ai_motor_fail_count += 1
                 if self._ai_motor_fail_count >= self._AI_MAX_FAIL:
                     if self.voice_window:
                         self.voice_window.push_log(
-                            f"[AI] M0串口连续失败{self._AI_MAX_FAIL}次 → 自动停止")
+                            f"[AI] M0 串口连续失败 {self._AI_MAX_FAIL} 次 → 自动停止"
+                        )
+                    self._stop_autonav()
                     self._transition_to_idle()
-                    if self._bc_runner is not None:
-                        self._bc_runner.reset()
                     return
             else:
                 self._ai_motor_fail_count = 0
 
-        # UI 状态显示：前10步每步都输出，之后每30步一次
+        # UI 状态显示：前 10 步每步都输出，之后每 30 步一次
         if self.voice_window:
             goal_code = _BC_PATHS.get(self._bc_goal_id, ('?', '?'))[0]
-            if decision.step_count <= 10 or decision.step_count % 30 == 0:
-                raw = decision.raw_action
+            if decision.step <= 10 or decision.step % 30 == 0:
                 self.voice_window.push_log(
-                    f"[AI步{decision.step_count}] raw=[{raw[0]:.2f},{raw[1]:.2f},{raw[2]:.2f}] "
-                    f"Δ=[{_dm0:.2f},{_dm1:.2f},{_dm2:.2f}]°"
+                    f"[AI步{decision.step}] mode={decision.mode.value} "
+                    f"Δ=[{decision.delta_m0:.2f},{decision.delta_m1:.2f},{decision.delta_m2:.2f}]°"
+                    f" corr=[{decision.junction_corr_m1:.2f},{decision.junction_corr_m2:.2f}]"
+                    f"{' OBS' if decision.obstruction_detected else ''}"
                 )
-            if decision.step_count % 30 == 0:
+            if decision.step % 30 == 0:
+                pct = decision.progress * 100
                 self.voice_window.update_state(
                     f"AI自主 [{goal_code}]",
-                    f"{decision.task_name} | 步={decision.step_count} | scale={self._bc_runner._scale:.1f}"
+                    f"mode={decision.mode.value} | 步={decision.step}/{decision.total_steps} | {pct:.0f}%"
                 )
+
+    def _stop_autonav(self) -> None:
+        """停止 AutoNav 并清空状态。"""
+        if self._autonav is not None:
+            try:
+                self._autonav.stop()
+            except Exception:
+                pass
+            self._autonav = None
 
     def loop_power_off(self) -> None:
         if self._handle_back_button():
@@ -2318,6 +2382,8 @@ class VisionRobotStateMachine:
                 handler = self.state_handlers.get(self.state)
                 if handler:
                     handler()
+                if self.bronchus_motor_adapter is not None:
+                    self.bronchus_motor_adapter.publish_robot(self)
                 self._process_voice_commands()
                 busy_maintain_target_frequency(60, t0)
         except KeyboardInterrupt:
@@ -2326,6 +2392,11 @@ class VisionRobotStateMachine:
             self._cleanup()
 
     def _cleanup(self) -> None:
+        if self.bronchus_motor_adapter is not None:
+            try:
+                self.bronchus_motor_adapter.close()
+            except Exception:
+                pass
         try:
             self.motors.stop()
         except Exception:
@@ -2502,9 +2573,12 @@ class VisionRobotStateMachine:
             self._bc_goal_id = goal_id
             if self._bc_runner is not None:
                 self._bc_runner.set_goal(goal_id)
+            # AutoNav 不持有 goal_id 状态，下一次 loop_ai_auto 懒加载时使用新值
+            self._stop_autonav()
         elif self._bc_runner is not None:
             # 每次进入AI模式都重置GRU隐状态和EMA，避免上次残留
             self._bc_runner.reset()
+            self._stop_autonav()
         self.state = 'AIAuto'
         self.on_enter_AIAuto()
 
@@ -3002,6 +3076,7 @@ class VisionRobotStateMachine:
             print(f"{get_time()}-语音停止：进入空闲保持，等待下一步指令")
             if self._bc_runner is not None:
                 self._bc_runner.reset()
+            self._stop_autonav()
             self._transition_to_idle()
         elif command == "poweroff":
             next_state = "断电维护"
@@ -3076,5 +3151,3 @@ def main() -> None:
 
 if __name__ == '__main__':
     main()
-
-

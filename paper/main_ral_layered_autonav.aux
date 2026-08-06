@@ -1,0 +1,131 @@
+\relax 
+\citation{fielding2019firsthuman,chaddha2019multicenter,rojassolano2018feasibility,chen2021benefit,kalchiem2022shapesensing}
+\citation{ali2023metaanalysis,zhang2024metaanalysis}
+\citation{zhang2024aicopilot,zhao2024bronchocopilot,cold2026bronchobot,wu2026longshort,tomasini2025topological}
+\citation{camarillo2008mechanics,webster2010continuum,rucker2011statics,burgner2015survey,till2019cosserat}
+\citation{lazo2022visualservo}
+\citation{zhang2024aicopilot,zhao2024bronchocopilot,xu2025lungdepth}
+\@writefile{toc}{\contentsline {section}{\numberline {I}Introduction}{1}{}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces The proposed multimodal AutoNav3Layer framework.}}{1}{}\protected@file@percent }
+\newlabel{fig:overview}{{1}{1}{}{figure.1}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {II}Related Work}{1}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {II-A}Robotic Bronchoscopy and Continuum Control}{1}{}\protected@file@percent }
+\citation{argall2009survey,osa2018imitation}
+\citation{ross2011dagger,ho2016gail}
+\citation{codevilla2018conditional}
+\citation{hochreiter1997lstm,cho2014gru}
+\citation{mandlekar2022robomimic,florence2022ibc,shafiullah2022bet,chi2024diffusionpolicy,zhao2023act,lynch2020play,levine2016visuomotor}
+\citation{schulman2017ppo}
+\citation{raffin2021sb3}
+\citation{ronneberger2015unet,he2017maskrcnn,chen2018deeplab}
+\citation{kirillov2023sam,oquab2024dinov2}
+\citation{redmon2016yolo}
+\citation{godard2019monodepth2,yang2024depthanythingv2,ozyoruk2021endoslam,cui2024endodac,zeinoddin2024dares}
+\citation{lamb2022suction,blakeman2022suction}
+\@writefile{lot}{\contentsline {table}{\numberline {I}{\ignorespaces Hardware and Runtime Configuration}}{2}{}\protected@file@percent }
+\newlabel{tab:hardware}{{I}{2}{}{table.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {II-B}Imitation and Reinforcement Learning}{2}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {II-C}Endoscopic Perception}{2}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {III}System and Data}{2}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {III-A}Platform}{2}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {III-B}Expert Demonstrations}{2}{}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {II}{\ignorespaces Goal-Conditioned Expert Dataset}}{2}{}\protected@file@percent }
+\newlabel{tab:data}{{II}{2}{}{table.2}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces Mucus segmentation training and held-out performance.}}{2}{}\protected@file@percent }
+\newlabel{fig:unet}{{2}{2}{}{figure.2}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {IV}Multimodal Perception}{2}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {IV-A}U-Net Mucus Segmentation}{2}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {IV-B}YOLO Anatomical Recognition and Temporal Confirmation}{2}{}\protected@file@percent }
+\citation{johannink2019residual}
+\@writefile{lot}{\contentsline {table}{\numberline {III}{\ignorespaces Verified YOLO Validation Metrics}}{3}{}\protected@file@percent }
+\newlabel{tab:yolo}{{III}{3}{}{table.3}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces U-Net, YOLO, topology, and depth outputs in representative airway scenes.}}{3}{}\protected@file@percent }
+\newlabel{fig:perception}{{3}{3}{}{figure.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {IV-C}Depth Anything V2 and Robust Target Depth}{3}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {V}Hierarchical Control}{3}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {V-A}Layer 1: Goal-Conditioned Recurrent Imitation}{3}{}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {4}{\ignorespaces Goal-conditioned recurrent imitation policy and optimization history.}}{3}{}\protected@file@percent }
+\newlabel{fig:gru}{{4}{3}{}{figure.4}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {IV}{\ignorespaces Verified GRU Training Evidence}}{3}{}\protected@file@percent }
+\newlabel{tab:gru}{{IV}{3}{}{table.4}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {V-B}Layer 2: Progress-Weighted Junction Correction}{3}{}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {5}{\ignorespaces Continuous progress--distance weighting preserves global intent while improving local centering.}}{4}{}\protected@file@percent }
+\newlabel{fig:layer2}{{5}{4}{}{figure.5}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {6}{\ignorespaces Continuous suction, mucus tracking, progress-aware mission continuity, and homing.}}{4}{}\protected@file@percent }
+\newlabel{fig:layer3}{{6}{4}{}{figure.6}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {V-C}Layer 3: Continuous Suction and Mission Continuity}{4}{}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {7}{\ignorespaces Standardized hardware evaluation setup.}}{4}{}\protected@file@percent }
+\newlabel{fig:setup}{{7}{4}{}{figure.7}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {V-D}Bounded Reinforcement-Learning Refinement}{4}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {VI}Experiments and Results}{4}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {VI-A}Study Design}{4}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {VI-B}Model-Level Results}{4}{}\protected@file@percent }
+\bibstyle{IEEEtran}
+\bibdata{literature/refs_verified}
+\bibcite{fielding2019firsthuman}{1}
+\bibcite{chaddha2019multicenter}{2}
+\bibcite{rojassolano2018feasibility}{3}
+\bibcite{chen2021benefit}{4}
+\@writefile{lot}{\contentsline {table}{\numberline {V}{\ignorespaces Perception Model Results to Report}}{5}{}\protected@file@percent }
+\newlabel{tab:perception}{{V}{5}{}{table.5}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {VI}{\ignorespaces Navigation and Junction-Centering Comparison}}{5}{}\protected@file@percent }
+\newlabel{tab:navigation}{{VI}{5}{}{table.6}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {VI-C}Integrated Results}{5}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {VI-D}Software Verification}{5}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {VII}Discussion}{5}{}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {VII}{\ignorespaces Ablation of Layer~2 Optimization}}{5}{}\protected@file@percent }
+\newlabel{tab:layer2}{{VII}{5}{}{table.7}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {VIII}{\ignorespaces Mucus Intervention and Mission Continuity}}{5}{}\protected@file@percent }
+\newlabel{tab:layer3}{{VIII}{5}{}{table.8}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {VIII}Conclusion}{5}{}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{References}{5}{}\protected@file@percent }
+\bibcite{kalchiem2022shapesensing}{5}
+\bibcite{ali2023metaanalysis}{6}
+\bibcite{zhang2024metaanalysis}{7}
+\bibcite{zhang2024aicopilot}{8}
+\bibcite{zhao2024bronchocopilot}{9}
+\bibcite{cold2026bronchobot}{10}
+\bibcite{wu2026longshort}{11}
+\bibcite{tomasini2025topological}{12}
+\bibcite{camarillo2008mechanics}{13}
+\bibcite{webster2010continuum}{14}
+\bibcite{rucker2011statics}{15}
+\bibcite{burgner2015survey}{16}
+\bibcite{till2019cosserat}{17}
+\bibcite{lazo2022visualservo}{18}
+\bibcite{xu2025lungdepth}{19}
+\bibcite{argall2009survey}{20}
+\bibcite{osa2018imitation}{21}
+\bibcite{ross2011dagger}{22}
+\bibcite{ho2016gail}{23}
+\bibcite{codevilla2018conditional}{24}
+\bibcite{hochreiter1997lstm}{25}
+\bibcite{cho2014gru}{26}
+\bibcite{mandlekar2022robomimic}{27}
+\bibcite{florence2022ibc}{28}
+\bibcite{shafiullah2022bet}{29}
+\bibcite{chi2024diffusionpolicy}{30}
+\bibcite{zhao2023act}{31}
+\bibcite{lynch2020play}{32}
+\bibcite{levine2016visuomotor}{33}
+\bibcite{schulman2017ppo}{34}
+\bibcite{raffin2021sb3}{35}
+\bibcite{ronneberger2015unet}{36}
+\bibcite{he2017maskrcnn}{37}
+\bibcite{chen2018deeplab}{38}
+\bibcite{kirillov2023sam}{39}
+\@writefile{lot}{\contentsline {table}{\numberline {IX}{\ignorespaces Reinforcement-Learning Refinement}}{6}{}\protected@file@percent }
+\newlabel{tab:rl}{{IX}{6}{}{table.9}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {8}{\ignorespaces Required final system-level results and ablations.}}{6}{}\protected@file@percent }
+\newlabel{fig:results}{{8}{6}{}{figure.8}{}}
+\bibcite{oquab2024dinov2}{40}
+\bibcite{redmon2016yolo}{41}
+\bibcite{godard2019monodepth2}{42}
+\bibcite{yang2024depthanythingv2}{43}
+\bibcite{ozyoruk2021endoslam}{44}
+\bibcite{cui2024endodac}{45}
+\bibcite{zeinoddin2024dares}{46}
+\bibcite{lamb2022suction}{47}
+\bibcite{blakeman2022suction}{48}
+\bibcite{johannink2019residual}{49}
+\gdef \@abspage@last{7}

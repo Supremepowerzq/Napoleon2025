@@ -5,11 +5,11 @@ bc_main.py — BC 模块命令行入口
 用法:
     python bc_main.py install_check          # 检查依赖
     python bc_main.py model_info             # 查看模型架构与观测空间
-    python bc_main.py list                   # 列出已录制的演示文件
+    python bc_main.py list                   # 列出已采集的演示文件
     python bc_main.py train [--epochs 150]   # 训练 BC 模型
     python bc_main.py test  [--path LMB]     # 离线推理验证
 
-录制方式：在主程序 UI 点「开始录制」，无需在此脚本中操作。
+采集方式：在主程序 UI 点「开始采集」，无需在此脚本中操作。
 
 Author: ZQ  Date: 2026-05
 """
@@ -39,7 +39,7 @@ def cmd_list(args):
     demos = list_demos(demo_dir)
     if not demos:
         print(f"暂无演示文件: {demo_dir}")
-        print("请在主程序 UI 中点「开始录制」采集数据。")
+        print("请在主程序 UI 中点「开始采集」采集数据。")
         print("\n支持的路径标签 (YOLO 代码):")
         for idx, (code, name) in BRONCHUS_PATHS.items():
             print(f"  {code:6s}  {name}")
@@ -66,7 +66,7 @@ def cmd_train(args):
     demo_dir = os.path.join(os.path.dirname(__file__), "expert_demos")
     demos = list_demos(demo_dir)
     if not demos:
-        print("无演示数据！请先在主程序 UI 录制专家演示。")
+        print("无演示数据！请先在主程序 UI 采集专家演示。")
         return
 
     total = sum(d.get("n_frames", 0) for d in demos)
@@ -116,9 +116,9 @@ def cmd_test(args):
     mg = _MockMotorGroup()
     for i in range(20):
         update_visual_features(
-            stone_detected = (i % 7 == 0),
-            stone_cx       = np.random.uniform(-0.3, 0.3),
-            depth_mean_mm  = np.random.uniform(20, 100),
+            obstruction_detected = (i % 7 == 0),
+            obstruction_cx       = np.random.uniform(-0.3, 0.3),
+            depth_mean_mm        = np.random.uniform(20, 100),
         )
         d = runner.step(mg)
         print(f"{i+1:4d}  {d.new_m0:+8.2f}  {d.new_m1:+8.2f}  {d.new_m2:+8.2f}"
@@ -198,7 +198,7 @@ def main():
     )
     sub = p.add_subparsers(dest="cmd")
 
-    sub.add_parser("list",          help="列出已录制的演示文件")
+    sub.add_parser("list",          help="列出已采集的演示文件")
     sub.add_parser("model_info",    help="显示模型架构和观测空间定义")
     sub.add_parser("install_check", help="检查依赖是否安装完整")
 
@@ -218,7 +218,7 @@ def main():
         print("\n快速开始:")
         print("  python bc_main.py install_check   # 检查依赖")
         print("  python bc_main.py model_info      # 查看观测空间")
-        print("  python bc_main.py list            # 查看已录制数据")
+        print("  python bc_main.py list            # 查看已采集数据")
         print("  python bc_main.py train           # 开始训练")
         print("  python bc_main.py test --path LMB # 验证推理")
         return

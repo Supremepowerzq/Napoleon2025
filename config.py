@@ -1,5 +1,6 @@
 import numpy as np
 import time
+import threading
 
 # config_dict = {  
 #     'speed_pf': 0,  
@@ -46,6 +47,32 @@ def get_config(key):
         _config_last[key] = value  # 缓存最新值
         allow_update[key] = True
     return value
+
+
+# 图像识别/追踪模式由视觉线程、键盘和 Tk UI 共同访问。
+# 使用独立的持久状态，避免复用上面的单生产者/单消费者速度队列。
+_tracking_mode_lock = threading.Lock()
+_tracking_mode = 1
+
+
+def set_tracking_mode(mode):
+    """设置追踪模式：1=岔口，2=阻塞物，3=混合。"""
+    try:
+        normalized = int(mode)
+    except (TypeError, ValueError):
+        return False
+    if normalized not in (1, 2, 3):
+        return False
+    global _tracking_mode
+    with _tracking_mode_lock:
+        _tracking_mode = normalized
+    return True
+
+
+def get_tracking_mode():
+    """返回当前追踪模式，允许视觉线程和 UI 多方只读。"""
+    with _tracking_mode_lock:
+        return _tracking_mode
         
 
     
