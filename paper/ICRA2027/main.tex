@@ -1,0 +1,472 @@
+% ICRA 2027 double-anonymous draft. All quantitative claims are traceable to
+% code, checkpoints, or recorded demonstrations in the ZQ branch.
+\documentclass[letterpaper,10pt,conference]{ieeeconf}
+\IEEEoverridecommandlockouts
+\overrideIEEEmargins
+
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{xcolor}
+\usepackage{cite}
+\usepackage{url}
+
+\newcommand{\TODO}[1]{\textcolor{red}{\textbf{[TODO: #1]}}}
+\newcommand{\obs}{\mathbf{o}}
+\newcommand{\act}{\mathbf{a}}
+\newcommand{\goal}{g}
+\newcommand{\hid}{\mathbf{h}}
+
+\title{MOSAIC-Broncho: Multimodal Observation and State-Aware\\
+Imitation Control for Goal-Directed Autonomous Bronchoscopy}
+
+\author{Anonymous Authors}
+
+\begin{document}
+\maketitle
+\thispagestyle{empty}
+\pagestyle{empty}
+
+\begin{abstract}
+A bronchial bifurcation often looks clear to a human but remains ambiguous to a
+robot. The image alone does not reveal the intended branch, recent motion, or
+tendon hysteresis. We therefore present MOSAIC-Broncho, a Multimodal
+Observation and State-Aware Imitation Control framework for goal-directed
+bronchoscopy. A unified monocular front end extracts structural, anatomical,
+and metric-geometric cues. These cues are synchronized with motor position,
+finite-difference velocity, and frame timing to form an auditable 20-D state.
+The controller conditions an eight-frame history on the desired anatomical
+target and predicts bounded increments for insertion and two bending axes. It
+is trained from 87 real-robot demonstrations with 30,730 synchronized frames
+across seven targets. The resulting 773,221-parameter GRU reaches a held-out
+action MSE of 0.002084 at epoch 29. The study evaluates each link in the loop:
+perception quality, temporal and multimodal ablations, runtime behavior, and
+target-wise navigation in a silicone airway phantom. The design favors a small,
+inspectable state and continuous real-time control over a large end-to-end
+policy. It provides a practical route toward autonomous bronchoscopy when data,
+compute, and safety margins are limited.
+\end{abstract}
+
+\begin{keywords}
+Medical robots and systems; imitation learning; recurrent neural networks;
+autonomous navigation; bronchoscopy; multimodal perception.
+\end{keywords}
+
+\section{Introduction}
+
+A bronchoscope reaches a fork. Both openings may look plausible. Yet only one
+leads to the target. The controller must remember the route, read the local
+geometry, and account for what the instrument has just done. A single image is
+not enough.
+
+This compact example captures the central difficulty of autonomous
+bronchoscopy. Airway views are repetitive. Their appearance changes with
+reflection, mucus, deformation, and blur. The robot adds another source of
+ambiguity: tendon friction and hysteresis make the same command produce
+different motion histories \cite{webster2010continuum,camarillo2008mechanics}.
+Although robotic platforms improve reach and stability, operation remains
+largely expert driven \cite{fielding2019firsthuman,chaddha2019multicenter,
+rojassolano2018feasibility}.
+
+Recent work attacks different parts of this problem. Visual servoing keeps the
+lumen near the image center \cite{lazo2022visualservo}. Online topological
+localization estimates where the scope is without patient-specific CT
+\cite{tomasini2025topological}. AI co-pilot learns shared control from a virtual
+expert and uses DAgger to reduce distribution shift
+\cite{zhang2024aicopilot}. BronchoCopilot fuses images and estimated pose in a
+reinforcement-learning agent \cite{zhao2024bronchocopilot}. More recently,
+long--short agents have combined a fast visual controller with slower strategic
+reasoning, reporting phantom, ex-vivo, and in-vivo evaluation
+\cite{wu2026longshort}. Together, these systems show rapid progress. They also
+leave a practical gap. Simulation offers scale but creates transfer risk.
+Purely reactive control loses route context. Large or hierarchical policies can
+be difficult to run and audit at motor-loop rate.
+
+Our premise is simple. Do not ask one image to carry the whole navigation
+problem. Instead, expose the few signals that matter and let a recurrent policy
+reason over their recent history. MOSAIC-Broncho follows this premise. Its
+MonoAirway-Fusion (MAF) front end turns a monocular frame into structural,
+anatomical, and metric-geometric evidence. The policy then combines these cues
+with the commanded goal and the measured motor state. It predicts continuous
+increments for insertion and two bending axes.
+
+This is not a claim that a GRU is novel by itself. GRUs are established sequence
+models \cite{cho2014gru}, and goal conditioning is well studied
+\cite{codevilla2018conditional}. The contribution lies in the control
+formulation: a small, normalized, and auditable state connects monocular airway
+perception to real three-axis demonstrations. This design is deliberately
+data-efficient. It is also honest about the limits of behavior cloning, notably
+covariate shift outside expert-supported states
+\cite{argall2009survey,osa2018imitation,ross2011dagger}.
+
+We ask whether this compact formulation is sufficient for goal-directed
+navigation on a physical bronchial phantom. Our contributions are:
+\begin{enumerate}
+  \item a unified monocular perception interface that exposes complementary
+  structural, anatomical, and metric-geometric evidence;
+  \item a normalized 20-D state that joins this evidence with motor position,
+  velocity, and timing, making every policy input loggable and inspectable;
+  \item a 773k-parameter, goal-conditioned GRU that maps eight-frame histories
+  from real expert demonstrations to bounded three-axis commands; and
+  \item an evaluation design that connects component quality and controlled
+  ablations to target-wise navigation on a physical silicone phantom.
+\end{enumerate}
+
+\section{Results}
+
+\subsection{Unified Multimodal Perception}
+
+The structural output of MAF was evaluated for bronchial-junction segmentation in silicone
+airway images. It correctly delineated bifurcation regions in representative
+clean, low-light, specular, and blurred views. Quantitative reporting will use
+a fixed held-out test split and include Dice, IoU, precision, recall, and
+inference latency; these values are reserved for the recovered evaluation
+sheet rather than estimated from qualitative examples.
+
+The nine-class anatomical output head contains 2.59M parameters. Its saved
+validation results are precision 0.8926, recall 0.7797, mAP50 0.9096, and
+mAP50--95 0.6006. The gap between precision and recall motivates the temporal
+confirmation logic used by the runtime anatomical state estimator: isolated
+missed frames do not immediately invalidate the confirmed airway location.
+
+\begin{table}[t]
+\caption{MAF Output Quality in Silicone Airways}
+\label{tab:perception-results}
+\centering\small
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{lccccc}
+\toprule
+Output & Precision & Recall & Dice/mAP50 & IoU/mAP50--95 & Latency \\
+\midrule
+Structure & \TODO{--} & \TODO{--} & \TODO{Dice} & \TODO{IoU} & \TODO{ms} \\
+Anatomy & 0.8926 & 0.7797 & 0.9096 & 0.6006 & \TODO{ms} \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\subsection{Metric-Geometric Perception}
+
+The metric-geometric output of MAF was tested inside the laboratory silicone bronchial phantom
+at predefined camera-to-surface distances and at multiple airway locations.
+We report both raw model output and the linearly calibrated estimate. The final
+analysis will include sample count, mean absolute error (MAE), root mean square
+error (RMSE), signed bias, coefficient of determination, and valid-frame rate.
+Performance will also be stratified by normal illumination, specular
+reflection, partial occlusion, and motion blur.
+
+\begin{table}[t]
+\caption{MAF Metric-Geometric Evaluation}
+\label{tab:depth-results}
+\centering\small
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{lcccc}
+\toprule
+Output & $N$ & MAE (mm) & RMSE (mm) & Bias (mm) \\
+\midrule
+Raw & \TODO{--} & \TODO{--} & \TODO{--} & \TODO{--} \\
+Calibrated & \TODO{--} & \TODO{--} & \TODO{--} & \TODO{--} \\
+\bottomrule
+\end{tabular}
+}
+\end{table}
+
+\subsection{Recurrent Policy Learning and Ablation}
+
+The real-robot dataset contains 87 expert demonstrations and 30,730
+synchronized frames across seven recorded anatomical targets. The selected
+MOSAIC-GRU checkpoint contains 773,221 trainable parameters. It was
+selected at epoch 29 with a held-out action MSE of 0.0020837828 and auxiliary
+task accuracy of 1.000. The first logged validation action MSE was 0.02577,
+corresponding to a 91.9\% reduction at the selected checkpoint. Task accuracy
+must not be interpreted as navigation success because it measures only the
+recorded navigate/intervene label.
+
+The ablation study evaluates the full model against a frame-wise MLP, a GRU
+without goal conditioning, a single-head GRU, a model without depth/path
+features, and a model without velocity/timing features. Every variant uses the
+same trajectory-wise split and reports total and per-axis action error,
+macro-F1, parameter count, and hardware route success.
+
+\begin{table}[t]
+\caption{MOSAIC-GRU Ablation}
+\label{tab:gru-ablation}
+\centering\small
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{lcccc}
+\toprule
+Variant & Action MSE & Task F1 & Parameters & Route success \\
+\midrule
+Frame-wise MLP & \TODO{--} & \TODO{--} & \TODO{--} & \TODO{--} \\
+GRU, no goal & \TODO{--} & \TODO{--} & \TODO{--} & \TODO{--} \\
+GRU, action only & \TODO{--} & -- & \TODO{--} & \TODO{--} \\
+No depth/path & \TODO{--} & \TODO{--} & \TODO{--} & \TODO{--} \\
+No velocity/$\Delta t$ & \TODO{--} & \TODO{--} & \TODO{--} & \TODO{--} \\
+Full model & 0.002084 & \TODO{macro-F1} & 773,221 & \TODO{--} \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\subsection{Real-Robot Navigation Success}
+
+The complete policy was evaluated from a fixed start pose in the silicone
+bronchial phantom. A trial is successful only if the bronchoscope enters the
+predefined target branch without operator takeover and remains there for the
+confirmation interval. We report per-target and pooled success with Wilson
+95\% confidence intervals, together with wrong-branch rate, completion time,
+contact count, and intervention count.
+
+\begin{table}[t]
+\caption{Real-Robot Navigation Results}
+\label{tab:evidence}
+\centering\small
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{lll}
+\toprule
+Target & Success ($n/N$) & 95\% CI \\
+\midrule
+LMB & \TODO{--/--} & \TODO{--} \\
+RMB & \TODO{--/--} & \TODO{--} \\
+LUB & \TODO{--/--} & \TODO{--} \\
+LLB & \TODO{--/--} & \TODO{--} \\
+RUL & \TODO{--/--} & \TODO{--} \\
+RML & \TODO{--/--} & \TODO{--} \\
+RLL & \TODO{--/--} & \TODO{--} \\
+Pooled & \TODO{--/--} & \TODO{--} \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+Together, these four result groups evaluate the complete perception-to-action
+chain: unified multimodal perception, recurrent policy learning, controlled
+ablation, and physical target arrival. Values shown as placeholders require
+the corresponding saved evaluation sheet and are not inferred from videos.
+
+\section{System and Multimodal Observation}
+
+\subsection{Robotic Platform}
+
+The platform uses a flexible bronchoscope driven by three position-controlled
+motors: insertion/withdrawal $M_0$, left--right bending $M_1$, and up--down
+bending $M_2$. The software separates camera/perception and motor-control
+threads through a thread-safe feature dictionary. Commands are checked against
+the implemented limits $M_0\in[-900,0]^\circ$, $M_1\in[-170,170]^\circ$, and
+$M_2\in[-600,600]^\circ$. The policy interface accepts the newest perception
+snapshot and cached motor feedback and can be called at 20--60\,Hz.
+
+\subsection{MonoAirway-Fusion Perception}
+
+MAF treats monocular perception as one structured inference operator. For an
+RGB frame $I_t$, it exposes structural evidence $\mathbf s_t$, anatomical
+evidence $\mathbf c_t$, and metric-geometric evidence $\mathbf d_t$:
+\begin{equation}
+ (\mathbf s_t,\mathbf c_t,\mathbf d_t)=\Phi_{\rm MAF}(I_t).
+\end{equation}
+The structural stream provides obstruction and bifurcation centroids, areas,
+and validity; the anatomical stream provides airway class and confidence; the
+metric-geometric stream provides center, mean, and maximum depth together with
+left, center, and right free-space summaries. The streams form a single
+13-dimensional visual-geometric interface rather than high-dimensional maps.
+
+For reproducibility, the present implementation instantiates the structural
+stream with a VGG--U-Net segmentation backbone \cite{ronneberger2015unet}, the
+anatomical stream with a lightweight YOLO-family detector
+\cite{redmon2016yolo}, and the monocular-depth prior with Depth Anything V2
+\cite{yang2024depthanythingv2}. These are replaceable estimators inside MAF;
+the method-level contribution is their synchronized, physically interpretable
+interface and its coupling to recurrent control.
+
+Let $\mathbf v_t=[\mathbf s_t;\mathbf c_t;\mathbf d_t]\in\mathbb R^{13}$.
+For each time $t$, $\obs_t\in\mathbb{R}^{20}$ contains seven visual features,
+six depth/path features, three motor angles, three finite-difference motor
+velocities, and the elapsed time $\Delta t$. Each component is normalized by a
+fixed physical or geometric scale $r_i$:
+\begin{equation}
+ \tilde o_{t,i}=o_{t,i}/r_i,\qquad
+ \tilde\obs_t=[\mathbf v_t;\mathbf q_t;\dot{\mathbf q}_t;\Delta t].
+\end{equation}
+The resulting representation is small
+enough to inspect, log, and replay, while temporal ambiguity is delegated to
+the recurrent policy.
+
+\begin{table}[t]
+\caption{Structured Observation Used by the Deployed Policy}
+\label{tab:obs}
+\centering\small
+\begin{tabular}{lcl}
+\toprule
+Group & Dim. & Contents \\
+\midrule
+Target/junction & 7 & centroids, areas, detection flag \\
+Depth geometry & 6 & center/mean/max, left/center/right \\
+Motor position & 3 & $M_0,M_1,M_2$ angles \\
+Motor velocity & 3 & finite-difference angular velocity \\
+Timing & 1 & frame interval $\Delta t$ \\
+\midrule
+Total & 20 & normalized structured state \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{MOSAIC Goal-Conditioned Recurrent Policy}
+
+\subsection{Architecture}
+
+The policy receives an eight-frame window
+$\mathbf O_t=[\obs_{t-7},\ldots,\obs_t]$ and a goal
+$\goal\in\{0,\ldots,9\}$. Goals comprise exploration, trachea, and eight named
+bronchial destinations. A shared multilayer perceptron encodes each observation
+through $20\rightarrow128\rightarrow128$ layers with LayerNorm and ELU. A
+learned lookup table maps the goal to a 16-dimensional vector, which is
+replicated across time and concatenated with every encoded observation.
+
+The $144$-dimensional sequence is processed by a two-layer GRU with hidden size
+256 and inter-layer dropout 0.1:
+\begin{align}
+ \mathbf x_t &= [f_{\rm obs}(\tilde\obs_t); f_{\rm goal}(\goal)],\\
+ \hid_t &= \mathrm{GRU}(\mathbf x_t,\hid_{t-1}).
+\end{align}
+The final state feeds an action head
+$256\rightarrow128\rightarrow3$ with $\tanh$ output and a task head
+$256\rightarrow64\rightarrow2$. The action head predicts normalized increments
+for insertion and two bending axes. The task head distinguishes navigation from
+obstruction intervention and acts as an auxiliary representation constraint.
+
+\subsection{Learning Objective and Data Split}
+
+The action and auxiliary objectives are
+\begin{equation}
+ \mathcal L = \|\hat\act_t-\act_t^E\|_2^2+
+ \lambda_s\,\mathrm{CE}(\hat{\mathbf z}_t,s_t^E),
+\end{equation}
+where $\act_t^E$ is the expert motor increment and $s_t^E$ is the task label.
+Training uses AdamW, OneCycleLR, mixed precision, gradient clipping, and batch
+size 64. Demonstrations are split by whole trajectory (90/10), preventing
+adjacent windows from the same run from entering both training and validation.
+
+The repository contains 87 real-robot demonstrations and 30,730 synchronized
+frames across seven recorded anatomical targets. Windows are sampled with
+$T=8$. Actions remain normalized during learning; deployment scales
+$\tanh$ outputs by $[5,3,3]^\circ$ per frame for $M_0/M_1/M_2$ and applies an
+additional configurable safety factor.
+The normalized action is converted to a safe absolute target as
+\begin{equation}
+ \mathbf q_{t+1}^{\rm cmd}=\operatorname{clip}
+ (\mathbf q_t+\beta\,\boldsymbol\alpha\odot\hat\act_t,
+  \mathbf q_{\min},\mathbf q_{\max}),
+\end{equation}
+where $\boldsymbol\alpha=[5,3,3]^\circ$ and $\beta\in(0,1]$ is the deployment
+safety factor.
+
+\subsection{Stateful Real-Time Inference}
+
+The runner maintains a fixed-length deque, the goal token, and recurrent hidden
+state. At each control step it (i) obtains the newest synchronized feature
+dictionary, (ii) estimates velocities from cached angles and $\Delta t$, (iii)
+normalizes the 20-dimensional observation, (iv) performs inference without
+gradients, and (v) converts bounded increments to absolute motor targets. When
+the goal changes or autonomy restarts, the buffer and hidden state are reset.
+Missing fields fall back to neutral values, while the surrounding controller
+uses timestamps and consecutive-frame confirmation to prevent stale visual
+events from triggering mode changes.
+
+Table~\ref{tab:comparison} places the method among its closest autonomous
+bronchoscopy counterparts. It is a design comparison, not a performance
+ranking, because the systems use different robots, targets, and test domains.
+
+\begin{table}[t]
+\caption{Design Context in Autonomous Bronchoscopy}
+\label{tab:comparison}
+\centering\small
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{lllll}
+\toprule
+Method & Training & Online input & Memory & Validation \\
+\midrule
+AI co-pilot \cite{zhang2024aicopilot} & sim. imitation & RGB + command & DAgger & phantom/in vivo \\
+BronchoCopilot \cite{zhao2024bronchocopilot} & sim. RL & RGB + pose & latent state & simulation \\
+Long--short \cite{wu2026longshort} & hierarchical & RGB + CT goal & dual agent & phantom/ex vivo/in vivo \\
+MOSAIC-Broncho & real BC & 20-D + goal & 8-frame GRU & silicone phantom \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\section{Experimental Protocol}
+\label{sec:protocol}
+
+\subsection{Phantom Evaluation}
+
+The final study will use paired, randomized trials from a fixed start jig on
+the same airway phantom. Targets include LMB, RMB, LUB, LLB, RUL, RML, and RLL.
+Initial pose, illumination, lens contamination, and mucus placement are varied
+according to a predefined schedule. The primary comparison is the proposed
+goal-conditioned GRU against (B0) expert teleoperation, (B1) frame-wise behavior
+cloning, (B2) GRU without goal conditioning, and (B3) reactive visual servoing.
+
+Primary outcomes are route success and wrong-branch rate. Secondary outcomes
+are normalized image-plane center error, wall-contact count and duration,
+completion time, action jerk, and inference/control latency. Each target and
+condition will report trial count, Wilson 95\% confidence intervals for binary
+outcomes, median and interquartile range for skewed continuous metrics, and a
+paired test with correction for multiple comparisons. Failures are classified
+as wrong branch, timeout, perception loss, contact stop, or operator takeover.
+
+\subsection{Ablations}
+
+Four ablations isolate the source of performance: remove the goal embedding;
+replace the GRU with a frame-wise MLP; remove depth/path features; and remove
+motor velocity and $\Delta t$. A fifth experiment compares the dual-head loss
+against action-only behavior cloning. These ablations test whether improvements
+arise from goal conditioning, temporal memory, geometric perception, dynamic
+state, or auxiliary supervision rather than parameter count alone.
+
+\section{Discussion}
+
+MOSAIC-Broncho occupies a middle ground between reactive servoing and large
+hierarchical agents. It retains explicit geometry and robot state, but learns
+how their recent history maps to action. This choice reduces model size and
+makes failures easier to trace. It also limits semantic breadth. The policy can
+only pursue configured anatomical goals, and its competence is bounded by the
+expert trajectories it has seen.
+
+The comparison with recent systems is therefore nuanced. AI co-pilot has
+stronger sim-to-real training and in-vivo evidence \cite{zhang2024aicopilot}.
+BronchoCopilot demonstrates deeper simulated navigation with multimodal RL
+\cite{zhao2024bronchocopilot}. Long--short agents address long-horizon planning
+and report ex-vivo and in-vivo experiments \cite{wu2026longshort}. Our current
+strength is different: the policy learns continuous three-axis control from
+real robot demonstrations and operates on a compact, inspectable temporal
+state. This is useful, but it is not yet evidence of state-of-the-art navigation
+performance.
+
+The present evidence has limitations. Validation MSE measures agreement with
+recorded actions, not recovery from covariate shift. Seven of ten configured
+goals have demonstrations, class balance is uneven, and perfect auxiliary
+accuracy may reflect label simplicity. Monocular depth can drift under fluid,
+specularity, and deformation. Finally, physical route success, contacts, and
+latency distributions remain to be inserted from randomized trial logs before
+submission. These limitations are made explicit to prevent software tests or
+qualitative videos from being misreported as efficacy evidence.
+
+\section{Conclusion}
+
+We presented MOSAIC-Broncho, a compact imitation-control framework for
+goal-directed robotic bronchoscopy. Its key idea is straightforward: make the
+navigation state explicit, then reason over time. A 20-D observation captures
+monocular airway cues and robot dynamics. An eight-frame, goal-conditioned GRU
+turns that history into bounded three-axis commands. The current artifacts
+establish the data scale, model design, and held-out prediction error. The
+locked phantom protocol defines the remaining evidence needed for submission.
+If the physical trials confirm robust target arrival, the system will show that
+useful bronchoscopic autonomy does not always require a large end-to-end model.
+
+\section*{Acknowledgment}
+For double-anonymous review, institutional support is omitted. OpenAI Codex was
+used to assist with manuscript organization, language drafting, and LaTeX
+preparation. All technical claims, citations, equations, and reported values
+were checked by the authors against the project code and saved artifacts.
+
+\bibliographystyle{IEEEtran}
+\bibliography{refs}
+
+\end{document}

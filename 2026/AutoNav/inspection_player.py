@@ -30,14 +30,19 @@ DEFAULT_INSPECTION_ROUTE: Tuple[Tuple[str, int, str], ...] = (
 )
 
 
-def _validate_source_file(path: str, code: str, label: int) -> Tuple[bool, str]:
-    """检查文件是否为指定叶段可用于拼接的“原点→叶段”单条轨迹。"""
+def _validate_source_file(
+    path: str, code: str, label: int, *, require_route_label: bool = True,
+) -> Tuple[bool, str]:
+    """检查轨迹是否可拼接；自动匹配时额外检查固定叶段标签。"""
     try:
         with open(path, "r", encoding="utf-8") as fp:
             data = json.load(fp)
-        if int(data.get("path_label", -1)) != label:
+        actual_label = int(data.get("path_label", -1))
+        if actual_label < 0:
+            return False, "缺少有效的路径标签"
+        if require_route_label and actual_label != label:
             return False, f"路径标签不是 {code}"
-        if str(data.get("yolo_code", code)).upper() != code:
+        if require_route_label and str(data.get("yolo_code", code)).upper() != code:
             return False, f"路径代码不是 {code}"
         frames = data.get("frames", [])
         if len(frames) < 20:
@@ -109,7 +114,13 @@ class InspectionSequencePlayer(SequencePlayer):
         trajectories: List[np.ndarray] = []
         for code, label, _name in self.route:
             source = self._resolve_source_file(code, label, source_files)
-            player = SequencePlayer(demo_dir, path_label=label, demo_file=source)
+            # 显式选择允许自定义名称与标签，读取所选 JSON 的实际标签。
+            if source_files is not None:
+                with open(source, "r", encoding="utf-8") as fp:
+                    source_label = int(json.load(fp)["path_label"])
+            else:
+                source_label = label
+            player = SequencePlayer(demo_dir, path_label=source_label, demo_file=source)
             trajectory = player.get_cumulative_trajectory()
             if len(trajectory) < 2:
                 raise ValueError(f"[Inspection] {code} 轨迹为空: {source}")
@@ -145,7 +156,9 @@ class InspectionSequencePlayer(SequencePlayer):
         demo_root = os.path.abspath(self.demo_dir)
         if os.path.dirname(path) != demo_root:
             raise ValueError(f"[Inspection] {code} 轨迹不在采集目录内")
-        valid, reason = _validate_source_file(path, code, label)
+        valid, reason = _validate_source_file(
+            path, code, label, require_route_label=False,
+        )
         if not valid:
             raise ValueError(
                 f"[Inspection] {code} 轨迹不可用于拼接: "
@@ -160,35 +173,39 @@ class InspectionSequencePlayer(SequencePlayer):
     ) -> Tuple[int, int, float]:
         """在三轴角度空间中寻找插入最深的近似重复点。"""
         tolerance = np.asarray(INSPECTION_MATCH_TOLERANCE, dtype=np.float32)
-        difference = previous[:, None, :] - following[None, :, :]
-        component_match = np.all(np.abs(difference) <= tolerance, axis=2)
-        normalized = np.linalg.norm(difference / tolerance, axis=2)
-        candidates = np.argwhere(
-            component_match
-            & (normalized <= INSPECTION_MATCH_MAX_NORMALIZED_DISTANCE)
-        )
-        if len(candidates) == 0:
-            raise ValueError("[Inspection] 相邻轨迹未找到近似重复点")
-
         best_key = None
         best_pair = None
-        for previous_step, following_step in candidates:
-            # M0 越负表示插入越深；同深度时优先两条轨迹进度都更靠后，
-            # 最后再选择三轴距离更小的点。
-            insertion_depth = -0.5 * (
-                float(previous[previous_step, 0])
-                + float(following[following_step, 0])
+        # 分块搜索，避免长采集轨迹一次生成 N×M 点对矩阵。
+        for start in range(0, len(previous), 128):
+            difference = previous[start:start + 128, None, :] - following[None, :, :]
+            component_match = np.all(np.abs(difference) <= tolerance, axis=2)
+            normalized = np.linalg.norm(difference / tolerance, axis=2)
+            local_steps, following_steps = np.nonzero(
+                component_match
+                & (normalized <= INSPECTION_MATCH_MAX_NORMALIZED_DISTANCE)
             )
-            shared_progress = min(
-                previous_step / max(len(previous) - 1, 1),
-                following_step / max(len(following) - 1, 1),
+            if not len(local_steps):
+                continue
+            previous_steps = start + local_steps
+            # M0 越负表示插入越深；同深度时比较两条轨迹进度和距离。
+            depth = -0.5 * (
+                previous[previous_steps, 0] + following[following_steps, 0]
             )
-            distance = float(normalized[previous_step, following_step])
-            key = (insertion_depth, shared_progress, -distance)
+            progress = np.minimum(
+                previous_steps / max(len(previous) - 1, 1),
+                following_steps / max(len(following) - 1, 1),
+            )
+            distances = normalized[local_steps, following_steps]
+            winner = np.lexsort((-distances, progress, depth))[-1]
+            previous_step = int(previous_steps[winner])
+            following_step = int(following_steps[winner])
+            distance = float(distances[winner])
+            key = (float(depth[winner]), float(progress[winner]), -distance)
             if best_key is None or key > best_key:
                 best_key = key
-                best_pair = (int(previous_step), int(following_step), distance)
-        assert best_pair is not None
+                best_pair = (previous_step, following_step, distance)
+        if best_pair is None:
+            raise ValueError("[Inspection] 相邻轨迹未找到近似重复点")
         return best_pair
 
     @staticmethod

@@ -1,0 +1,13 @@
+{
+  "version": "2.0",
+  "session_name": "synthetic_example",
+  "path_name": "合成示例",
+  "record_hz": 20.0,
+  "frames": [
+    {"timestamp": 0.00, "m0_angle": 0.0, "m1_angle": 0.0, "m2_angle": 0.0},
+    {"timestamp": 0.05, "m0_angle": -5.0, "m1_angle": 0.0, "m2_angle": 0.0},
+    {"timestamp": 0.10, "m0_angle": -10.0, "m1_angle": 30.0, "m2_angle": 5.0},
+    {"timestamp": 0.15, "m0_angle": -15.0, "m1_angle": 60.0, "m2_angle": 10.0},
+    {"timestamp": 0.20, "m0_angle": -20.0, "m1_angle": 90.0, "m2_angle": 15.0}
+  ]
+}

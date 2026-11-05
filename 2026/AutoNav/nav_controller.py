@@ -32,7 +32,7 @@ DONE        当前路径序列播放完毕（已到达目标部位）
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, Tuple, Dict, Any, Sequence
 import time
 import numpy as np
 
@@ -50,7 +50,7 @@ from .config import (
     OBSTRUCTION_VISUAL_MAX_AGE_S,
 )
 from .sequence_player import SequencePlayer
-from .inspection_player import InspectionSequencePlayer
+from .inspection_player import DEFAULT_INSPECTION_ROUTE, InspectionSequencePlayer
 from .junction_guide import (
     JunctionGuide,
     junction_distance_weight,
@@ -201,10 +201,12 @@ class AutoNavController:
         self,
         current_motor_angles: Tuple[float, float, float],
         source_files: Optional[Dict[str, str]] = None,
+        route: Optional[Sequence[Tuple[str, int, str]]] = None,
     ):
-        """启动左上→左下→右上→右中→右下→TR 的 Layer 1 全流程。"""
+        """按给定动作顺序启动全流程；未指定时使用原有五叶段顺序。"""
         self._player = InspectionSequencePlayer(
             self.demo_dir,
+            route=route if route is not None else DEFAULT_INSPECTION_ROUTE,
             source_files=source_files,
         )
         self._player.reset(current_motor_angles)

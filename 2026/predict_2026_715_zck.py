@@ -92,6 +92,11 @@ except Exception as _motor_bronch_exc:
     _MOTOR_LINKED_BRONCH_AVAILABLE = False
     print(f"[BronchState] 电机联动模块导入失败，使用旧筛选器: {_motor_bronch_exc}")
 
+# 猪肺单帧位置分类模型（Ultralytics classification 导出权重）。
+_PORCINE_CLASSIFIER_PATH = Path(
+    r"G:\zck\porcine_lung_location_cls\runs\porcine_lung_1103_yolo11n_cls\best_ultralytics.pt"
+)
+
 # ============================================================
 # Depth-Anything-V2 Metric 版本导入
 # ============================================================
@@ -271,11 +276,11 @@ class UnetPackage:
         # 默认模式1，使程序启动后窗口2右下角方向圆直接显示岔口纠正方向。
         self._track_mode = get_tracking_mode()
 
-        # 支气管树 YOLO 识别
+        # 猪肺 YOLO 单帧分类
         self._bronch_model = None
-        self._bronch_current_position = 'TR'
+        self._bronch_current_position = 'Unknown'
         self._bronch_confirm_count = {}
-        self._bronch_last_confirmed = 'TR'
+        self._bronch_last_confirmed = 'Unknown'
         self._bronch_last_state = None
         self._bronch_state_coordinator = (
             _BronchusDetectionCoordinator()
@@ -286,18 +291,17 @@ class UnetPackage:
         self._bronch_map_cache = None     # 地图图像缓存
         self._bronch_map_last_pos = None  # 缓存对应的位置
         self._bronch_map_dirty = False    # 标记地图需要在非YOLO帧重渲染
-        _bronch_model_path = str(_BRONCH_DEPLOY_MODEL_PATH)
+        _bronch_model_path = str(_PORCINE_CLASSIFIER_PATH)
         if os.path.exists(_bronch_model_path):
             try:
-                self._bronch_model = YOLO(_bronch_model_path, task='detect')
+                self._bronch_model = YOLO(_bronch_model_path, task='classify')
                 _bronch_device = 'cuda' if torch.cuda.is_available() else 'cpu'
                 self._bronch_model.to(_bronch_device)
-                print(f"Bronchial tree YOLO model loaded ({_bronch_device}): {_bronch_model_path}")
-                # 打印模型类别名称，确认与状态机关键字匹配
-                print(f"[YOLO] Model class names: {self._bronch_model.names}")
+                print(f"Porcine lung classifier loaded ({_bronch_device}): {_bronch_model_path}")
+                print(f"[YOLO-Cls] Model class names: {self._bronch_model.names}")
 
-                # 用随机噪声图预热，触发所有 CUDA kernel 编译（含检测/NMS路径）
-                print("Warming up bronchial YOLO...")
+                # 用相同大小的图像预热分类推理。
+                print("Warming up porcine lung classifier...")
                 for _ in range(3):
                     _wup = np.random.randint(0, 255,
                                              (self.roi_side, self.roi_side, 3),
@@ -305,11 +309,11 @@ class UnetPackage:
                     self._bronch_model(_wup, verbose=False)
                 if torch.cuda.is_available():
                     torch.cuda.synchronize()
-                print("Bronchial YOLO warm-up done.")
+                print("Porcine lung classifier warm-up done.")
             except Exception as e:
-                print(f"Bronchial tree YOLO model load/warmup failed: {e}")
+                print(f"Porcine lung classifier load/warmup failed: {e}")
         else:
-            print(f"Warning: Bronchial tree model not found: {_bronch_model_path}")
+            print(f"Warning: Porcine lung classifier not found: {_bronch_model_path}")
 
         # 预加载PIL字体，避免每次渲染时触发磁盘I/O
         from PIL import ImageFont as _PIF
@@ -332,16 +336,12 @@ class UnetPackage:
         self._bronch_render_running = False
         # YOLO 后台推理
         self._bronch_yolo_lock = _th.Lock()
-        self._bronch_yolo_result = []   # 最新一次 YOLO 检测结果
+        self._bronch_yolo_result = []   # 最新一次分类结果
         self._bronch_yolo_running = False
 
-        # 预渲染节点标签贴图（PIL只调用一次，极快）
+        # 当前拼接画面不显示支气管地图，保留空缓存供旧辅助接口使用。
         self._bronch_label_imgs = {}
-        self._prerender_node_labels()
-
-        # 预渲染9个部位地图（纯OpenCV，运行时零开销）
         self._bronch_all_maps = {}
-        self._prerender_all_bronchial_maps()
 
         # 加载去畸变maps（独立于深度模型）
         self._init_undistort_maps()
@@ -718,46 +718,27 @@ class UnetPackage:
             circular_original = frame_cropped_raw.copy()
 
             # ============================================================
-            # Step 2b: 支气管树部位识别（BFS状态机，每3帧推理）
+            # Step 2b: 猪肺部位分类（每3帧推理）
             # ============================================================
             _bronch_conf_display = None
-            _bronch_raw_display = []  # 用于在画面显示原始检测框
-
             self._bronch_frame_count = (self._bronch_frame_count + 1) % 3
             if self._bronch_model is not None and self._bronch_frame_count == 0:
                 try:
                     _res = self._bronch_model(frame_cropped_raw, verbose=False)
-                    _bronch_raw = []
-                    if _res[0].boxes is not None:
-                        for _box in _res[0].boxes:
-                            _cls = self._bronch_model.names[int(_box.cls)]
-                            _conf = round(float(_box.conf), 2)
-                            _xyxy = _box.xyxy[0].tolist()
-                            _bronch_raw.append((_cls, _conf))
-                            _bronch_raw_display.append((_cls, _conf, _xyxy))
-
-                    _validated_pos, _validated_conf = \
-                        self._bronch_filter_by_anatomy(_bronch_raw)
-
-                    if (_validated_pos is not None
-                            and _validated_pos != self._bronch_current_position):
-                        self._bronch_current_position = _validated_pos
-                        self._bronch_last_confirmed = _validated_pos
-                    if _validated_conf is not None:
-                        _bronch_conf_display = _validated_conf
+                    probs = _res[0].probs if _res else None
+                    if probs is not None:
+                        class_id = int(probs.top1)
+                        confidence = float(probs.top1conf)
+                        label = str(self._bronch_model.names[class_id])
+                        _bronch_conf_display = confidence
+                        if confidence >= _BRONCH_CONFIDENCE_THRESHOLD:
+                            self._bronch_current_position = label
+                            self._bronch_last_confirmed = label
                 except Exception as e:
-                    print(f"[YOLO] ERROR: {type(e).__name__}: {e}")
+                    print(f"[YOLO-Cls] ERROR: {type(e).__name__}: {e}")
 
-            # 在第一窗口显示：确认部位（左下角）+ 原始检测框（画面上）
+            # 原始画面显示最新确认的分类部位与置信度。
             _bh = circular_original.shape[0]
-            # 原始检测框（绿色，辅助参考）
-            for _cls, _conf, _xyxy in _bronch_raw_display:
-                _x1, _y1, _x2, _y2 = [int(v) for v in _xyxy]
-                cv2.rectangle(circular_original,
-                              (_x1, _y1), (_x2, _y2), (0, 220, 80), 1)
-                cv2.putText(circular_original, f"{_cls} {_conf}",
-                            (_x1, max(_y1 - 4, 12)),
-                            cv2.FONT_HERSHEY_DUPLEX, 0.4, (0, 220, 80), 1)
             # 确认部位标签（左下角，黑底青字）
             cv2.rectangle(circular_original, (0, _bh - 58), (240, _bh), (0, 0, 0), -1)
             cv2.putText(circular_original,
@@ -766,10 +747,6 @@ class UnetPackage:
                         0.55, (0, 200, 255), 1, cv2.LINE_AA)
             if _bronch_conf_display is not None:
                 _bronch_detail = f"Conf: {_bronch_conf_display:.2f}"
-                if self._bronch_last_state is not None:
-                    _gate_phase = self._bronch_last_state.gate.phase
-                    if _gate_phase != "INACTIVE":
-                        _bronch_detail += f"  {_gate_phase}"
                 cv2.putText(circular_original,
                             _bronch_detail,
                             (6, _bh - 10), cv2.FONT_HERSHEY_DUPLEX,
@@ -1297,7 +1274,7 @@ class UnetPackage:
             )
 
             # ============================================================
-            # Step 14: 拼接五窗口：BronchMap | Original | UNet | Depth | 3D
+            # Step 14: 拼接四窗口：Original | UNet | Depth | 3D
             # ============================================================
             try:
                 if circular_unet.shape[:2] != (target_h, target_w):
@@ -1305,30 +1282,22 @@ class UnetPackage:
                 if circular_depth.shape[:2] != (target_h, target_w):
                     circular_depth = cv2.resize(circular_depth, (target_w, target_h))
 
-                # 支气管树地图（字典查找，零开销）
-                _cur_map = self._bronch_all_maps.get(self._bronch_last_confirmed)
-                if _cur_map is None:
-                    _cur_map = np.zeros((target_h, target_w, 3), dtype=np.uint8)
-                elif _cur_map.shape[:2] != (target_h, target_w):
-                    _cur_map = cv2.resize(_cur_map, (target_w, target_h))
-
-                combined_width = target_w * 5
+                combined_width = target_w * 4
                 combined_height = target_h
                 combined_image = np.zeros((combined_height, combined_width, 3), dtype=np.uint8)
 
-                combined_image[:, 0:target_w]             = _cur_map          # 气管树地图
-                combined_image[:, target_w:2*target_w]   = circular_original  # 原始画面
-                combined_image[:, 2*target_w:3*target_w] = circular_unet       # UNet分割
-                combined_image[:, 3*target_w:4*target_w] = circular_depth      # 深度图
-                combined_image[:, 4*target_w:5*target_w] = point_cloud_view    # 3D点云
+                combined_image[:, 0:target_w]             = circular_original  # 原始画面
+                combined_image[:, target_w:2*target_w]   = circular_unet       # UNet分割
+                combined_image[:, 2*target_w:3*target_w] = circular_depth      # 深度图
+                combined_image[:, 3*target_w:4*target_w] = point_cloud_view    # 3D点云
 
-                # 缩放到屏幕可显示大小（5宽→缩小到0.7）
+                # 缩放到屏幕可显示大小
                 display_scale = 0.7
                 display_w = int(combined_width * display_scale)
                 display_h = int(combined_height * display_scale)
                 combined_image_display = cv2.resize(combined_image, (display_w, display_h))
 
-                cv2.imshow("BronchMap | Original | UNet | Depth | 3D", combined_image_display)
+                cv2.imshow("Original | UNet | Depth | 3D", combined_image_display)
 
             except Exception as e:
                 print(f"Combine window error: {e}")
@@ -1665,9 +1634,9 @@ class UnetPackage:
         if self._bronch_state_coordinator is not None:
             self._bronch_state_coordinator.reset()
             self._bronch_last_state = None
-        self._bronch_current_position = 'TR'
+        self._bronch_current_position = 'Unknown'
         self._bronch_confirm_count = {}
-        self._bronch_last_confirmed = 'TR'
+        self._bronch_last_confirmed = 'Unknown'
 
     def _prerender_all_bronchial_maps(self):
         """用纯OpenCV预渲染9个部位的地图，运行时直接字典查找，零开销"""
@@ -1800,16 +1769,18 @@ class UnetPackage:
         return canvas
 
     def _async_yolo_run(self, frame_copy):
-        """后台线程：CPU 上运行 YOLO 推理，不阻塞主线程"""
+        """后台线程：运行分类推理，不阻塞主线程。"""
         try:
             # 限制 PyTorch 在本线程使用的 CPU 核数，避免抢占主线程的 CPU 资源
             torch.set_num_threads(2)
             results = self._bronch_model(frame_copy, verbose=False)
             _raw = []
-            if results[0].boxes is not None:
-                for _box in results[0].boxes:
-                    _raw.append((self._bronch_model.names[int(_box.cls)],
-                                 float(_box.conf)))
+            probs = results[0].probs if results else None
+            if probs is not None:
+                _raw.append((
+                    str(self._bronch_model.names[int(probs.top1)]),
+                    float(probs.top1conf),
+                ))
             with self._bronch_yolo_lock:
                 self._bronch_yolo_result = _raw
         except Exception as e:

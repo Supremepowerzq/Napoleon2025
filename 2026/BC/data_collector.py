@@ -190,6 +190,8 @@ class BronchusDataCollector:
         self._prev_time:   Optional[float] = None
         self._is_recording = False
         self._session_name = ""
+        # 可选的现场自定义轨迹名。为空时保持原有固定支气管标签行为。
+        self.custom_path_name = ""
 
         # 自动切换子任务（根据视觉特征判断）
         self.auto_task_label = True
@@ -198,7 +200,12 @@ class BronchusDataCollector:
 
     # ── 控制接口 ──────────────────────────────────────────────
 
-    def start(self, session_name: str = "", path_label: Optional[int] = None) -> bool:
+    def start(
+        self,
+        session_name: str = "",
+        path_label: Optional[int] = None,
+        custom_path_name: str = "",
+    ) -> bool:
         """开始采集。返回 True 表示成功。"""
         if self._is_recording:
             print("[DataCollector] 已在采集中，请先停止")
@@ -206,6 +213,7 @@ class BronchusDataCollector:
 
         if path_label is not None:
             self.path_label = path_label
+        self.custom_path_name = str(custom_path_name or "").strip()
 
         self._frames = []
         self._start_time = time.time()
@@ -213,8 +221,8 @@ class BronchusDataCollector:
         self._is_recording = True
         self._session_name = session_name or datetime.now().strftime("%Y%m%d_%H%M%S")
 
-        yolo_code = IDX_TO_YOLO.get(self.path_label, "EXP")
-        path_name = IDX_TO_NAME.get(self.path_label, "unknown")
+        yolo_code = "CUSTOM" if self.custom_path_name else IDX_TO_YOLO.get(self.path_label, "EXP")
+        path_name = self.custom_path_name or IDX_TO_NAME.get(self.path_label, "unknown")
         print(f"[DataCollector] 开始采集: {self._session_name}")
         print(f"  目标路径: [{yolo_code}] {path_name}")
         print(f"  采集频率: {self.record_hz} Hz  存储目录: {self.save_dir}")
@@ -317,12 +325,20 @@ class BronchusDataCollector:
             return None
 
         duration  = self._frames[-1].timestamp if self._frames else 0.0
-        yolo_code = IDX_TO_YOLO.get(self.path_label, "EXP")
-        path_name = IDX_TO_NAME.get(self.path_label, "unknown")
+        yolo_code = "CUSTOM" if self.custom_path_name else IDX_TO_YOLO.get(self.path_label, "EXP")
+        path_name = self.custom_path_name or IDX_TO_NAME.get(self.path_label, "unknown")
 
         # 文件名格式：<会话名>_<YOLO代码>_<帧数>frames.json / .h5
         ext   = ".h5" if self.use_hdf5 else ".json"
-        fname = f"{self._session_name}_{yolo_code}_{n}frames{ext}"
+        # 自定义名称会出现在文件名中，便于在目录中直接辨认；同时清理
+        # Windows 文件名不允许的字符。完整名称仍原样保存在 JSON 元数据中。
+        safe_name = "".join(
+            "_" if ch in '<>:"/\\|?*' or ord(ch) < 32 else ch
+            for ch in path_name
+        ).strip(" ._")
+        safe_name = "_".join(safe_name.split())[:40] or "unnamed"
+        name_part = f"_{safe_name}" if self.custom_path_name else ""
+        fname = f"{self._session_name}_{yolo_code}{name_part}_{n}frames{ext}"
         fpath = os.path.join(self.save_dir, fname)
 
         if self.use_hdf5:
@@ -367,8 +383,9 @@ class BronchusDataCollector:
         data = {
             "version":      "2.0",
             "session_name": self._session_name,
-            "yolo_code":    IDX_TO_YOLO.get(self.path_label, "EXP"),
-            "path_name":    IDX_TO_NAME.get(self.path_label, "unknown"),
+            "yolo_code":    "CUSTOM" if self.custom_path_name else IDX_TO_YOLO.get(self.path_label, "EXP"),
+            "path_name":    self.custom_path_name or IDX_TO_NAME.get(self.path_label, "unknown"),
+            "custom_path_name": self.custom_path_name,
             "path_label":   self.path_label,
             "n_frames":     len(self._frames),
             "duration_s":   round(self._frames[-1].timestamp, 4) if self._frames else 0.0,
@@ -427,8 +444,9 @@ class BronchusDataCollector:
         with h5py.File(fpath, "w") as hf:
             hf.attrs["session_name"]   = self._session_name
             hf.attrs["path_label"]     = self.path_label
-            hf.attrs["yolo_code"]      = IDX_TO_YOLO.get(self.path_label, "EXP")
-            hf.attrs["path_name"]      = IDX_TO_NAME.get(self.path_label, "unknown")
+            hf.attrs["yolo_code"]      = "CUSTOM" if self.custom_path_name else IDX_TO_YOLO.get(self.path_label, "EXP")
+            hf.attrs["path_name"]      = self.custom_path_name or IDX_TO_NAME.get(self.path_label, "unknown")
+            hf.attrs["custom_path_name"] = self.custom_path_name
             hf.attrs["n_frames"]       = n
             hf.attrs["duration_s"]     = float(timestamps[-1])
             hf.attrs["record_hz"]      = self.record_hz

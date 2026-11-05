@@ -1,0 +1,21 @@
+trial_id,date_time,formal_or_pilot,model_variant,checkpoint_id,git_commit,randomization_block,target,initial_pose_id,initial_M0_deg,initial_M1_deg,initial_M2_deg,illumination_condition,lens_condition,phantom_id,max_time_s,confirmation_time_s,success,wrong_branch,operator_takeover,emergency_stop,perception_loss,completion_time_s,time_to_termination_s,contact_count,contact_duration_s,primary_failure_mode,secondary_failure_modes,end_M0_deg,end_M1_deg,end_M2_deg,video_file,state_log_file,command_log_file,excluded_from_primary,exclusion_reason,notes
+action_20251204_153617,2025-12-04T16:03:13,pilot,,,,,,,769.0,0.0,0.0,,,,,,,,,,,14.101079940795898,,,,,,779,0,0,,,,,,
+action_20251225_163727,2025-12-25T16:37:27,pilot,,,,,,,0.0,0.0,0.0,,,,,,,,,,,66.79554057121277,,,,,,-6,0,0,,,,,,
+action_20260118_131708,2026-01-18T13:17:08,pilot,,,,,,,0.0,0.0,0.0,,,,,,,,,,,90.99802780151367,,,,,,-1,0,-1,,,,,,
+action_20260129_105058,2026-01-29T10:50:58,pilot,,,,,,,-3.0,0.0,0.0,,,,,,,,,,,92.94801259040833,,,,,,-4,0,0,,,,,,
+action_20260323_103700,2026-03-23T10:37:00,pilot,,,,,,,-5.0,0.0,0.0,,,,,,,,,,,31.352372407913208,,,,,,16,0,0,,,,,,
+action_20260323_141958,2026-03-23T14:19:58,pilot,,,,,,,0.0,0.0,0.0,,,,,,,,,,,42.05634546279907,,,,,,0,0,0,,,,,,
+action_20260323_142033,2026-03-23T14:20:33,pilot,,,,,,,0.0,0.0,0.0,,,,,,,,,,,30.594062566757202,,,,,,-2,0,0,,,,,,
+action_20260323_142254（all）,2026-03-23T14:22:54,pilot,,,,,,,-2.0,0.0,0.0,,,,,,,,,,,138.60624766349792,,,,,,-3,0,0,,,,,,
+action_20260530_195313,2026-05-30T19:53:13,pilot,,,,,,,-719.0,-6.0,360.0,,,,,,,,,,,1.5250236988067627,,,,,,-719,-6,360,,,,,,
+action_20260530_201353,2026-05-30T20:13:53,pilot,,,,,,,0.0,0.0,0.0,,,,,,,,,,,13.912905216217041,,,,,,-116,0,125,,,,,,
+右下叶外基底段,2025-12-22T15:43:36,pilot,,,,,,,-4.0,-1.0,-2.0,,,,,,,,,,,58.23668384552002,,,,,,-8,0,0,,,,,,
+trial_111,2026-08-12T10:06:00,formal,MOSAIC-GRU,ckpt_16,abcde11,block_4,RUL,pose_3,1.4,-9.5,-1.3,normal,clean,phantom_1,120,2.0,1,0,0,0,0,27.81,54.19,0,1.18,,,-4.7,-8.1,-1.6,trial_111.mp4,trial_111_state.log,trial_111_cmd.log,0,,sample row
+trial_112,2026-08-12T10:12:00,formal,MOSAIC-GRU,ckpt_17,abcde12,block_1,RML,pose_1,1.0,1.2,1.3,low_light,clean,phantom_1,120,2.0,0,1,0,0,0,44.55,35.17,3,1.18,wrong_branch,,3.1,-9.9,1.8,trial_112.mp4,trial_112_state.log,trial_112_cmd.log,0,,sample row
+trial_113,2026-08-12T10:18:00,formal,MOSAIC-GRU,ckpt_18,abcde13,block_2,RLL,pose_2,2.0,-3.2,-2.1,normal,clean,phantom_1,120,2.0,1,0,0,0,0,53.50,30.20,0,0.76,,,-1.4,-3.1,-1.4,trial_113.mp4,trial_113_state.log,trial_113_cmd.log,0,,sample row
+trial_114,2026-08-12T10:24:00,formal,MOSAIC-GRU,ckpt_19,abcde14,block_3,LMB,pose_3,-4.6,-0.8,-2.3,normal,clean,phantom_1,120,2.0,1,0,0,0,0,52.28,14.73,2,1.66,,,1.2,7.2,0.5,trial_114.mp4,trial_114_state.log,trial_114_cmd.log,0,,sample row
+trial_115,2026-08-12T10:30:00,formal,MOSAIC-GRU,ckpt_20,abcde15,block_4,RMB,pose_1,2.0,-9.1,-1.6,low_light,specular,phantom_1,120,2.0,1,0,0,0,0,30.13,14.79,1,1.73,,,-1.2,-0.9,2.0,trial_115.mp4,trial_115_state.log,trial_115_cmd.log,0,,sample row
+trial_116,2026-08-12T10:36:00,formal,MOSAIC-GRU,ckpt_21,abcde16,block_1,LUB,pose_2,-3.4,-2.9,1.0,normal,clean,phantom_1,120,2.0,1,0,1,0,0,44.56,51.01,0,1.22,,,-3.3,4.6,-2.0,trial_116.mp4,trial_116_state.log,trial_116_cmd.log,0,,sample row
+trial_117,2026-08-12T10:42:00,formal,MOSAIC-GRU,ckpt_22,abcde17,block_2,LLB,pose_3,-1.2,9.8,0.8,normal,clean,phantom_1,120,2.0,1,0,0,0,0,39.49,51.08,0,0.46,,,-4.7,-3.7,-1.4,trial_117.mp4,trial_117_state.log,trial_117_cmd.log,0,,sample row
+trial_118,2026-08-12T10:48:00,formal,MOSAIC-GRU,ckpt_23,abcde18,block_3,RUL,pose_1,-2.9,8.9,2.3,low_light,clean,phantom_1,120,2.0,0,1,0,0,0,31.01,49.33,3,1.77,wrong_branch,,1.4,-7.1,-2.2,trial_118.mp4,trial_118_state.log,trial_118_cmd.log,0,,sample row
+trial_119,2026-08-12T10:54:00,formal,MOSAIC-GRU,ckpt_24,abcde19,block_4,RML,pose_2,2.4,0.8,1.5,normal,clean,phantom_1,120,2.0,1,0,0,0,0,35.00,45.01,2,0.44,,,5.0,0.2,-2.5,trial_119.mp4,trial_119_state.log,trial_119_cmd.log,0,,sample row
